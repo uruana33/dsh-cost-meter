@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "rootDir": "./packages",
+    "outDir": "./packages/plugin/lib/types"
+  },
+  "include": [
+    "packages/plugin/src/**/*.ts",
+    "packages/plugin/src/**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "packages/plugin/lib"
+  ]
+}

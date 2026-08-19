@@ -1,0 +1,7 @@
+# Example dsh profile layer. Add the package to the profile dependencies first;
+# the package manifest contributes the browser `dsh.client` entry.
+- insert:
+    - id: mymeter
+      name: '@mymeter/dsh-cost-meter'
+      config:
+        ledgerPath: !!js dshHomePath('mymeter/ledger.json')

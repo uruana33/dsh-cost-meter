@@ -1,0 +1,77 @@
+name: Bug 报告
+description: 报告 dsh-cost-meter 中可复现的问题。
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        不要在公开 issue 中报告安全漏洞；请按 SECURITY.md 处理。
+        日志或截图中请移除 API key、token、用户标识、请求 ID、本机用户名和敏感业务数据。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 摘要
+      description: 发生了什么？你原本预期什么结果？
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 提供能够复现问题的最小步骤。
+      placeholder: |
+        1. Install ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 填写相关版本和运行环境。
+      placeholder: |
+        OS:
+        Node:
+        npm:
+        Browser:
+        dsh-cost-meter version or commit:
+        DeepSeek Harness / dsh version:
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 描述当前行为。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 描述你期望的行为。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或截图
+      description: 只粘贴已脱敏日志。移除密钥、账号标识、请求 ID、会话 ID、本机用户名和私密提示词。
+      render: text
+  - type: textarea
+    id: impact
+    attributes:
+      label: 影响范围
+      description: 是否影响价格计算、本地账本数据、插件打包或 UI 展示？
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 检查项
+      options:
+        - label: 我已搜索现有 issue。
+          required: true
+        - label: 我已从报告中移除密钥、个人信息和业务敏感数据。
+          required: true

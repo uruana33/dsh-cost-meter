@@ -1,0 +1,61 @@
+name: 功能请求
+description: 为 dsh-cost-meter 建议改进。
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        不要在公开 issue 中报告安全漏洞；请按 SECURITY.md 处理。
+        示例中请移除 API key、token、用户标识、请求 ID、本机用户名和敏感业务数据。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题
+      description: 这项请求要解决什么用户需求或工作流问题？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 描述你希望看到的行为、UI、API 或配置。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已考虑的替代方案
+      description: 你考虑过哪些变通方式或其他设计？
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 如果此请求依赖运行时或宿主行为，请填写相关版本。
+      placeholder: |
+        OS:
+        Node:
+        npm:
+        Browser:
+        dsh-cost-meter version or commit:
+        DeepSeek Harness / dsh version:
+  - type: textarea
+    id: pricing
+    attributes:
+      label: 价格目录影响
+      description: 如果涉及模型价格、别名、计费单位、币种、缓存或折扣，请提供来源和生效日期。
+  - type: textarea
+    id: privacy
+    attributes:
+      label: 隐私与安全考虑
+      description: 说明是否新增收集、存储、展示、导出或传输的数据。
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 检查项
+      options:
+        - label: 我已搜索现有 issue。
+          required: true
+        - label: 我已从请求中移除密钥、个人信息和业务敏感数据。
+          required: true

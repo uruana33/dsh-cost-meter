@@ -1,0 +1,20 @@
+export * from "./common";
+export * from "./catalog";
+export * from "./anthropic";
+export * from "./cerebras";
+export * from "./deepseek";
+export * from "./fireworks";
+export * from "./google";
+export * from "./groq";
+export * from "./minimax";
+export * from "./mistral";
+export * from "./moonshotai";
+export * from "./openai";
+export * from "./together";
+export * from "./xai";
+export * from "./versions";
+export * from "./remote-update";
+import type { AdditionalPricingCatalogKind } from "./catalog";
+export type PricingCatalogKind = "deepseek" | "xai" | AdditionalPricingCatalogKind;
+/** Resolve the rate-card owner without treating gateway route ids as price sources. */
+export declare function resolvePricingCatalogKind(provider: string | undefined, model: string): PricingCatalogKind | null;
