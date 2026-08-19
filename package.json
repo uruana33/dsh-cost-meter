@@ -16,7 +16,7 @@
     "build:plugin": "node scripts/build-plugin.mjs",
     "build": "npm run typecheck && npm run build:plugin",
     "verify:package": "node scripts/verify-package.mjs",
-    "verify": "npm test && npm run build && npm run verify:package",
+    "verify": "npm test && npm run build && npm run pack:plugin && npm run verify:package",
     "pack:plugin": "npm pack --workspace @mymeter/dsh-cost-meter"
   },
   "engines": {
