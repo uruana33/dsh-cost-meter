@@ -49,6 +49,8 @@ export type {
   CostAnalyticsReport,
   CostAnalyticsTrendBucket,
 } from "./analytics.js";
+export { createHostUsageOverview } from "./usage-overview.js";
+export type { UsageOverviewOptions, UsageOverviewReport } from "./usage-overview.js";
 
 export { createAppendOnlyCostEventRepository } from "./append-ledger.js";
 export type {

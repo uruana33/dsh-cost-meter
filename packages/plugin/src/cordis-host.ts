@@ -428,7 +428,7 @@ function createCordisBalanceProvider(
     };
   };
 
-  const provider: MyMeterBalanceProvider = async () => {
+  const provider: MyMeterBalanceProvider = async (options) => {
     const current = connection();
     if (!service || serviceBaseUrl !== current.baseUrl) {
       serviceBaseUrl = current.baseUrl;
@@ -453,7 +453,7 @@ function createCordisBalanceProvider(
         },
       });
     }
-    return service.getSnapshot();
+    return service.getSnapshot(options);
   };
 
   const invalidate = (): void => service?.clearCache();

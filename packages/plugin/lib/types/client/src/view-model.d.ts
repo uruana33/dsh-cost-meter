@@ -182,6 +182,36 @@ export interface CostAnalyticsAnomalyView {
     bucketKey: string;
     explanation: string;
 }
+export interface UsageOverviewView {
+    range: "today" | "7d" | "30d";
+    timeZone: string;
+    generatedAt: string;
+    total: AmountView;
+    totalTokens: number;
+    requestCount: number;
+    pricedRequestCount: number;
+    unknownRequestCount: number;
+    coverage: "complete" | "partial" | "unavailable";
+    trend: Array<{
+        key: string;
+        startAt: string;
+        endAt: string;
+        amount: AmountView;
+        totalTokens: number;
+        requestCount: number;
+        coverage: "complete" | "partial" | "unavailable";
+    }>;
+    topModels: Array<{
+        provider: string;
+        model: string;
+        amount: AmountView;
+        totalTokens: number;
+        requestCount: number;
+        pricedRequestCount: number;
+        unknownRequestCount: number;
+        coverage: "complete" | "partial" | "unavailable";
+    }>;
+}
 export interface CostAnalyticsView {
     generatedAt: string;
     total: AmountView;
@@ -272,6 +302,7 @@ export interface MyMeterViewModel {
     insights: BillingInsightsView;
     sessionCostTree: AsyncResourceView<SessionCostTreeView>;
     costAnalytics: AsyncResourceView<CostAnalyticsView>;
+    usageOverview: AsyncResourceView<UsageOverviewView>;
     ledgerExport: LedgerExportView;
     alerts: string[];
 }

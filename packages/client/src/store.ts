@@ -16,6 +16,7 @@ import type {
   SessionSummaryView,
   SessionTurnView,
   TokenBucketView,
+  UsageOverviewView,
 } from "./view-model";
 
 export interface StorageLike {
@@ -296,6 +297,45 @@ export interface RemoteCostAnalyticsReport {
   anomalies: RemoteCostAnalyticsAnomaly[];
 }
 
+export type UsageOverviewRange = "today" | "7d" | "30d";
+export type UsageOverviewCoverage = "complete" | "partial" | "unavailable";
+
+export interface RemoteUsageOverviewQuery {
+  range: UsageOverviewRange;
+  timeZone?: string | undefined;
+}
+
+export interface RemoteUsageOverviewTotal {
+  amountMicroCny: number;
+  totalTokens: number;
+  requestCount: number;
+  pricedRequestCount: number;
+  unknownRequestCount: number;
+  coverage: UsageOverviewCoverage;
+}
+
+export interface RemoteUsageOverviewTrendBucket extends RemoteUsageOverviewTotal {
+  key: string;
+  startAt: string;
+  endAt: string;
+}
+
+export interface RemoteUsageOverviewModelSummary extends RemoteUsageOverviewTotal {
+  provider: string;
+  model: string;
+}
+
+export interface RemoteUsageOverviewReport {
+  range: UsageOverviewRange;
+  timeZone: string;
+  generatedAt: string;
+  startAt: string;
+  endAt: string;
+  totals: RemoteUsageOverviewTotal;
+  trend: RemoteUsageOverviewTrendBucket[];
+  topModels: RemoteUsageOverviewModelSummary[];
+}
+
 export interface MyMeterRemoteSnapshot {
   connection: {
     status: ConnectionStatus;
@@ -308,20 +348,24 @@ export interface MyMeterRemoteSnapshot {
   sessions: RemoteSessionSummary[];
   details: Record<string, RemoteSessionDetail>;
   exchangeRate?: RemoteExchangeRateSnapshot;
+  ledgerGeneration?: number;
 }
 
 export interface MyMeterRemote {
   getSnapshot(): MyMeterRemoteSnapshot;
   subscribe(listener: (snapshot: MyMeterRemoteSnapshot) => void): () => void;
   refreshExchangeRate?(): Promise<RemoteExchangeRateSnapshot | void>;
+  refreshBalance?(): Promise<RemoteBalanceSnapshot | void>;
   getSessionCostTree?(): Promise<RemoteSessionCostTree>;
   getCostAnalytics?(): Promise<RemoteCostAnalyticsReport>;
+  getUsageOverview?(query: RemoteUsageOverviewQuery): Promise<RemoteUsageOverviewReport>;
   exportLedger?(format: RemoteLedgerExportFormat): Promise<string>;
 }
 
 export type SessionSort = "recent" | "amount" | "status";
 export type StatusFilter = MeterStatusCode | "all";
 export type ClientPanel = "compact" | "sessions" | "detail" | "settings" | "costTree" | "analytics";
+export type AnalyticsRange = UsageOverviewRange;
 
 export interface MyMeterStoreUiState {
   selectedSessionId: string | null;
@@ -330,6 +374,7 @@ export interface MyMeterStoreUiState {
   searchQuery: string;
   sortBy: SessionSort;
   filterStatus: StatusFilter;
+  analyticsRange: AnalyticsRange;
 }
 
 export interface MyMeterStoreState {
@@ -342,6 +387,7 @@ export interface MyMeterStoreState {
 interface MyMeterAsyncState {
   sessionCostTree: AsyncResourceView<SessionCostTreeView>;
   costAnalytics: AsyncResourceView<CostAnalyticsView>;
+  usageOverview: AsyncResourceView<UsageOverviewView>;
   ledgerExport: LedgerExportView;
 }
 
@@ -361,6 +407,7 @@ export interface MyMeterStore {
   setSearchQuery(query: string): void;
   setSortBy(sortBy: SessionSort): void;
   setFilterStatus(status: StatusFilter): void;
+  setAnalyticsRange(range: AnalyticsRange): void;
   setSettings(patch: Partial<MyMeterSettings>): void;
   resetSettings(): void;
   setReducedMotion(reducedMotion: boolean): void;
@@ -374,8 +421,10 @@ export interface MyMeterStore {
   setOverlayCollapsed(collapsed: boolean): void;
   setOverlayVisible(visible: boolean): void;
   refreshExchangeRate(): Promise<void>;
+  refreshBalance(): Promise<void>;
   loadSessionCostTree(): Promise<void>;
   loadCostAnalytics(): Promise<void>;
+  loadUsageOverview(range?: AnalyticsRange): Promise<void>;
   exportLedger(format: RemoteLedgerExportFormat): Promise<void>;
 }
 
@@ -548,7 +597,7 @@ export function buildViewModel(
   snapshot: MyMeterRemoteSnapshot,
   settings: MyMeterSettings,
   ui: MyMeterStoreUiState,
-  asyncState = createIdleAsyncState({ treeAvailable: false, analyticsAvailable: false, exportAvailable: false }),
+  asyncState = createIdleAsyncState({ treeAvailable: false, analyticsAvailable: false, usageAvailable: false, exportAvailable: false }),
 ): MyMeterViewModel {
   const activeId = ui.selectedSessionId ?? settings.pinnedSessionId ?? snapshot.currentSessionId;
   const activeSession = activeId ? snapshot.sessions.find((session) => session.id === activeId) ?? null : null;
@@ -681,6 +730,7 @@ export function buildViewModel(
     insights,
     sessionCostTree: asyncState.sessionCostTree,
     costAnalytics: asyncState.costAnalytics,
+    usageOverview: asyncState.usageOverview,
     ledgerExport: asyncState.ledgerExport,
     alerts: createAlerts(snapshot, statusCode, balances, insights.budget.message),
   };
@@ -700,10 +750,13 @@ export function createMyMeterStore(options: {
   let asyncState = createIdleAsyncState({
     treeAvailable: Boolean(remote.getSessionCostTree),
     analyticsAvailable: Boolean(remote.getCostAnalytics),
+    usageAvailable: Boolean(remote.getUsageOverview),
     exportAvailable: Boolean(remote.exportLedger),
   });
   let sessionCostTreeRequestId = 0;
   let costAnalyticsRequestId = 0;
+  let usageOverviewRequestId = 0;
+  const usageOverviewCache = new Map<AnalyticsRange, { dayKey: string; data: UsageOverviewView }>();
   let ledgerExportRequestId = 0;
   let ui: MyMeterStoreUiState = {
     selectedSessionId: settings.pinnedSessionId,
@@ -712,11 +765,15 @@ export function createMyMeterStore(options: {
     searchQuery: "",
     sortBy: "recent",
     filterStatus: "all",
+    analyticsRange: "today",
   };
   // `selectedSessionId` is also used for the dsh-following mode. Keep the
   // last host value separately so an explicit MyMeter session selection is
   // not overwritten by the next render of the global shell slot.
   let lastSyncedSessionId = remoteSnapshot.currentSessionId;
+  let lastLedgerGeneration = remoteSnapshot.ledgerGeneration;
+  let lastOverviewDayKey = usageOverviewDayKey();
+  let usageOverviewRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let state = recompute(remoteSnapshot, settings, ui, asyncState);
   const listeners = new Set<() => void>();
 
@@ -739,9 +796,24 @@ export function createMyMeterStore(options: {
   };
 
   const unsubscribeRemote = remote.subscribe((snapshot) => {
+    const ledgerChanged = snapshot.ledgerGeneration !== undefined
+      && snapshot.ledgerGeneration !== lastLedgerGeneration;
+    const currentOverviewDayKey = usageOverviewDayKey();
+    const dayChanged = currentOverviewDayKey !== lastOverviewDayKey;
+    lastOverviewDayKey = currentOverviewDayKey;
+    lastLedgerGeneration = snapshot.ledgerGeneration;
     remoteSnapshot = snapshot;
     state = recompute(remoteSnapshot, settings, ui, asyncState);
     emit();
+    if ((ledgerChanged || dayChanged) && remote.getUsageOverview && asyncState.usageOverview.data) {
+      usageOverviewCache.clear();
+      if (usageOverviewRefreshTimer === null) {
+        usageOverviewRefreshTimer = setTimeout(() => {
+          usageOverviewRefreshTimer = null;
+          void store.loadUsageOverview(ui.analyticsRange);
+        }, 500);
+      }
+    }
   });
   const unsubscribeSettings = subscribeToSettingsChanges(
     storage,
@@ -784,6 +856,8 @@ export function createMyMeterStore(options: {
     destroy() {
       unsubscribeRemote();
       unsubscribeSettings();
+      if (usageOverviewRefreshTimer !== null) clearTimeout(usageOverviewRefreshTimer);
+      usageOverviewRefreshTimer = null;
       listeners.clear();
     },
     selectSession(sessionId) {
@@ -814,6 +888,10 @@ export function createMyMeterStore(options: {
     },
     setFilterStatus(status) {
       setUi({ filterStatus: status });
+    },
+    setAnalyticsRange(range) {
+      setUi({ analyticsRange: range });
+      void store.loadUsageOverview(range);
     },
     setSettings(patch) {
       persistAndEmit({ ...settings, ...patch });
@@ -867,6 +945,10 @@ export function createMyMeterStore(options: {
       if (!remote.refreshExchangeRate) return;
       await remote.refreshExchangeRate();
     },
+    async refreshBalance() {
+      if (!remote.refreshBalance) return;
+      await remote.refreshBalance();
+    },
     async loadSessionCostTree() {
       if (!remote.getSessionCostTree) return;
       const requestId = ++sessionCostTreeRequestId;
@@ -891,6 +973,33 @@ export function createMyMeterStore(options: {
       } catch (error) {
         if (requestId !== costAnalyticsRequestId) return;
         setAsyncState({ costAnalytics: { status: "error", data: asyncState.costAnalytics.data, error: errorMessage(error) } });
+      }
+    },
+    async loadUsageOverview(range = ui.analyticsRange) {
+      if (!remote.getUsageOverview) return;
+      const currentRange = range;
+      const cached = usageOverviewCache.get(currentRange);
+      if (cached?.dayKey === usageOverviewDayKey()) {
+        setAsyncState({ usageOverview: { status: "ready", data: cached.data, error: null } });
+        return;
+      }
+      if (cached) {
+        usageOverviewCache.delete(currentRange);
+      }
+      const requestId = ++usageOverviewRequestId;
+      const previousData = asyncState.usageOverview.data?.range === currentRange
+        ? asyncState.usageOverview.data
+        : null;
+      setAsyncState({ usageOverview: { status: "loading", data: previousData, error: null } });
+      try {
+        const report = await remote.getUsageOverview({ range: currentRange });
+        if (requestId !== usageOverviewRequestId || ui.analyticsRange !== currentRange) return;
+        const mapped = mapUsageOverview(report);
+        usageOverviewCache.set(currentRange, { dayKey: usageOverviewDayKey(mapped.timeZone), data: mapped });
+        setAsyncState({ usageOverview: { status: "ready", data: mapped, error: null } });
+      } catch (error) {
+        if (requestId !== usageOverviewRequestId || ui.analyticsRange !== currentRange) return;
+        setAsyncState({ usageOverview: { status: "error", data: previousData, error: errorMessage(error) } });
       }
     },
     async exportLedger(format) {
@@ -1122,6 +1231,7 @@ function mapContextBreakdown(contextBreakdown: RemoteContextBreakdown | null): S
 function createIdleAsyncState(input: {
   treeAvailable: boolean;
   analyticsAvailable: boolean;
+  usageAvailable: boolean;
   exportAvailable: boolean;
 }): MyMeterAsyncState {
   return {
@@ -1132,6 +1242,11 @@ function createIdleAsyncState(input: {
     },
     costAnalytics: {
       status: input.analyticsAvailable ? "idle" : "unavailable",
+      data: null,
+      error: null,
+    },
+    usageOverview: {
+      status: input.usageAvailable ? "idle" : "unavailable",
       data: null,
       error: null,
     },
@@ -1194,6 +1309,52 @@ function mapCostAnalytics(report: RemoteCostAnalyticsReport): CostAnalyticsView 
       explanation: anomaly.explanation,
     })),
   };
+}
+
+function mapUsageOverview(report: RemoteUsageOverviewReport): UsageOverviewView {
+  return {
+    range: report.range,
+    timeZone: report.timeZone,
+    generatedAt: report.generatedAt,
+    total: createAmountView(report.totals.amountMicroCny),
+    totalTokens: report.totals.totalTokens,
+    requestCount: report.totals.requestCount,
+    pricedRequestCount: report.totals.pricedRequestCount,
+    unknownRequestCount: report.totals.unknownRequestCount,
+    coverage: report.totals.coverage,
+    trend: report.trend.map((bucket) => ({
+      key: bucket.key,
+      startAt: bucket.startAt,
+      endAt: bucket.endAt,
+      amount: createAmountView(bucket.amountMicroCny),
+      totalTokens: bucket.totalTokens,
+      requestCount: bucket.requestCount,
+      coverage: bucket.coverage,
+    })),
+    topModels: report.topModels.map((model) => ({
+      provider: model.provider,
+      model: model.model,
+      amount: createAmountView(model.amountMicroCny),
+      totalTokens: model.totalTokens,
+      requestCount: model.requestCount,
+      pricedRequestCount: model.pricedRequestCount,
+      unknownRequestCount: model.unknownRequestCount,
+      coverage: model.coverage,
+    })),
+  };
+}
+
+function usageOverviewDayKey(timeZone = "Asia/Shanghai", value = Date.now()): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(value));
+  } catch {
+    return new Date(value).toISOString().slice(0, 10);
+  }
 }
 
 function mapTrendBucket(bucket: RemoteCostAnalyticsTrendBucket): CostTrendBucketView {

@@ -1248,10 +1248,12 @@ test("Typert Remote descriptor is strict and rejects malformed snapshots", () =>
     "listSessions",
     "getSessionDetail",
     "getBalance",
+    "refreshBalance",
     "getSettings",
     "refreshExchangeRate",
     "getSessionCostTree",
     "getCostAnalytics",
+    "getUsageOverview",
     "exportLedger",
   ]);
   expect(MYMETER_REMOTE_CONTRIBUTION.descriptors.every((descriptor) => descriptor.result.mode === "strict")).toBe(true);

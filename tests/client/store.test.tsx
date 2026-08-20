@@ -328,6 +328,90 @@ describe("MyMeter store and mock remote", () => {
     store.destroy();
   });
 
+  test("loads usage overview by range, caches each range, and ignores stale responses", async () => {
+    const remote = createMockRemote("billing");
+    const getUsageOverview = vi.fn(async ({ range }: { range: "today" | "7d" | "30d" }) => usageOverviewReport(range));
+    Object.assign(remote, { getUsageOverview });
+    const store = createMyMeterStore({ remote, storage, storageKey: "usage-overview.settings" });
+
+    await act(async () => {
+      await store.loadUsageOverview("today");
+    });
+    expect(store.getState().viewModel.usageOverview.status).toBe("ready");
+    expect(store.getState().viewModel.usageOverview.data?.range).toBe("today");
+    expect(getUsageOverview).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await store.loadUsageOverview("today");
+    });
+    expect(getUsageOverview).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      store.setAnalyticsRange("7d");
+      await Promise.resolve();
+    });
+    expect(store.getState().ui.analyticsRange).toBe("7d");
+    expect(store.getState().viewModel.usageOverview.data?.range).toBe("7d");
+    expect(getUsageOverview).toHaveBeenCalledTimes(2);
+
+    store.destroy();
+  });
+
+  test("keeps the last overview visible when a refreshed report fails", async () => {
+    vi.useFakeTimers();
+    const remote = createMockRemote("billing");
+    let shouldFail = false;
+    const getUsageOverview = vi.fn(async ({ range }: { range: "today" | "7d" | "30d" }) => {
+      if (shouldFail) throw new Error("overview unavailable");
+      return usageOverviewReport(range);
+    });
+    Object.assign(remote, { getUsageOverview });
+    const store = createMyMeterStore({ remote, storage, storageKey: "usage-overview-stale.settings" });
+
+    await act(async () => {
+      await store.loadUsageOverview("today");
+    });
+    const previous = store.getState().viewModel.usageOverview.data;
+    shouldFail = true;
+    const snapshot = remote.getSnapshot();
+    snapshot.ledgerGeneration = 1;
+    remote.setSnapshot(snapshot);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(getUsageOverview).toHaveBeenCalledTimes(2);
+    expect(store.getState().viewModel.usageOverview.status).toBe("error");
+    expect(store.getState().viewModel.usageOverview.data).toBe(previous);
+    expect(store.getState().viewModel.usageOverview.error).toBe("overview unavailable");
+    store.destroy();
+  });
+
+  test("refreshes the current overview when the ledger generation changes", async () => {
+    vi.useFakeTimers();
+    const remote = createMockRemote("billing");
+    const initial = remote.getSnapshot();
+    initial.ledgerGeneration = 1;
+    remote.setSnapshot(initial);
+    const getUsageOverview = vi.fn(async ({ range }: { range: "today" | "7d" | "30d" }) => usageOverviewReport(range));
+    Object.assign(remote, { getUsageOverview });
+    const store = createMyMeterStore({ remote, storage, storageKey: "usage-overview-generation.settings" });
+
+    await act(async () => {
+      await store.loadUsageOverview("today");
+    });
+    const next = remote.getSnapshot();
+    next.ledgerGeneration = 2;
+    remote.setSnapshot(next);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(getUsageOverview).toHaveBeenCalledTimes(2);
+    expect(store.getState().viewModel.usageOverview.status).toBe("ready");
+    store.destroy();
+  });
+
   test("resolves and filters balance status states", () => {
     expect(resolvePrimaryStatus("billing", "expired", "billing")).toBe("balance_expired");
     expect(resolvePrimaryStatus("billing", "insufficient", "billing")).toBe("balance_insufficient");
@@ -731,5 +815,46 @@ function ledgerSummary(agentPreset: string, totalMicroCny: number) {
     model: "deepseek-chat",
     reasoningEffort: "standard",
     agentPreset,
+  };
+}
+
+function usageOverviewReport(range: "today" | "7d" | "30d") {
+  const count = range === "today" ? 24 : range === "7d" ? 7 : 30;
+  const trend = Array.from({ length: count }, (_, index) => ({
+    key: range === "today" ? String(index).padStart(2, "0") : `2026-08-${String(index + 1).padStart(2, "0")}`,
+    startAt: "2026-08-20T00:00:00.000Z",
+    endAt: "2026-08-20T01:00:00.000Z",
+    amountMicroCny: index === count - 1 ? 120_000 : 0,
+    totalTokens: index === count - 1 ? 12_000 : 0,
+    requestCount: index === count - 1 ? 1 : 0,
+    pricedRequestCount: index === count - 1 ? 1 : 0,
+    unknownRequestCount: 0,
+    coverage: index === count - 1 ? "complete" as const : "unavailable" as const,
+  }));
+  return {
+    range,
+    timeZone: "Asia/Shanghai",
+    generatedAt: "2026-08-20T00:00:00.000Z",
+    startAt: "2026-08-20T00:00:00.000Z",
+    endAt: "2026-08-21T00:00:00.000Z",
+    totals: {
+      amountMicroCny: 120_000,
+      totalTokens: 12_000,
+      requestCount: 1,
+      pricedRequestCount: 1,
+      unknownRequestCount: 0,
+      coverage: "complete" as const,
+    },
+    trend,
+    topModels: [{
+      provider: "deepseek",
+      model: "deepseek-chat",
+      amountMicroCny: 120_000,
+      totalTokens: 12_000,
+      requestCount: 1,
+      pricedRequestCount: 1,
+      unknownRequestCount: 0,
+      coverage: "complete" as const,
+    }],
   };
 }

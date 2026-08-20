@@ -1,9 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 
+import { AnalyticsChart, type AnalyticsRange } from "./analytics-chart";
 import { formatStatusLabel, formatTokenBucketLabel, formatTokenCount } from "./format";
 import { contextBreakdownRows, SessionStageTabs, StageMetadataPanel } from "./session-stages";
 import { buildTokenCostBreakdown } from "./token-breakdown";
 import { MyMeterUpdateControl } from "./update-ui";
+import { UsageOverview } from "./usage-overview";
 import type { MyMeterUpdateController } from "./update-controller";
 import type {
   BalanceView,
@@ -101,6 +103,11 @@ export function CompactMeter({
   onOpenTokenBilling?: () => void;
 }) {
   const state = useMyMeterStoreState(store);
+  useEffect(() => {
+    if (state.viewModel.usageOverview.status === "idle") {
+      void store.loadUsageOverview("today");
+    }
+  }, [state.viewModel.usageOverview.status, store]);
   const opensPage = Boolean(onOpenTokenBilling);
   const isBilling = state.viewModel.status.code === "billing";
   const inProgressLabel = "生成中";
@@ -202,6 +209,31 @@ export function CompactMeter({
           }}
         >
           {/* 顶栏：标题与状态 */}
+          <div
+            data-testid="mymeter-today-summary"
+            aria-label="今日用量摘要"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+              gap: 3,
+              paddingBottom: 4,
+              borderBottom: "1px solid var(--dsw-alias-border-l1, #e5e7eb)",
+              fontSize: 8.5,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              今日 {state.viewModel.usageOverview.data?.coverage === "unavailable" ? "—" : state.viewModel.usageOverview.data?.total.label ?? "同步中"}
+            </span>
+            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              Token {state.viewModel.usageOverview.data ? formatTokenCount(state.viewModel.usageOverview.data.totalTokens) : "—"}
+            </span>
+            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {state.viewModel.balance.supported
+                ? `余额 ${state.viewModel.balance.total?.label ?? "不可用"}`
+                : state.viewModel.balance.status === "unavailable" ? "余额未接入" : "同步中"}
+            </span>
+          </div>
           <div
             style={{
               display: "flex",
@@ -616,6 +648,17 @@ export function GlobalSessionList({ store }: { store: MyMeterStore }) {
               {state.viewModel.exchangeRate.status === "loading" ? "查询中" : "查询汇率"}
             </button>
           ) : null}
+          {state.viewModel.balance.supported ? (
+            <button
+              type="button"
+              aria-label="刷新余额"
+              title="刷新余额"
+              onClick={() => { void store.refreshBalance(); }}
+              style={{ marginLeft: 6, padding: "1px 5px", borderRadius: 4, border: `1px solid ${DSH_COLORS.border1}`, background: DSH_COLORS.base, color: DSH_COLORS.brand, fontSize: 9, cursor: "pointer" }}
+            >
+              刷新
+            </button>
+          ) : null}
         </span>
         <BillingInsightsStrip
           ariaLabel="全局费用洞察"
@@ -634,6 +677,7 @@ export function GlobalSessionList({ store }: { store: MyMeterStore }) {
             ? state.viewModel.sessionCostTree.status === "unavailable"
             : panel === "analytics"
               ? state.viewModel.costAnalytics.status === "unavailable"
+                && state.viewModel.usageOverview.status === "unavailable"
               : false;
           return <button
             key={panel}
@@ -648,6 +692,9 @@ export function GlobalSessionList({ store }: { store: MyMeterStore }) {
               }
               if (panel === "analytics" && state.viewModel.costAnalytics.status === "idle") {
                 void store.loadCostAnalytics();
+              }
+              if (panel === "analytics" && state.viewModel.usageOverview.status === "idle") {
+                void store.loadUsageOverview(state.ui.analyticsRange);
               }
             }}
             style={{
@@ -881,44 +928,85 @@ function SessionCostTreeNodeRow({ node }: { node: SessionCostTreeNodeView }): Re
 
 function CostAnalyticsPanel({ store, state }: { store: MyMeterStore; state: MyMeterStoreState }): ReactNode {
   const resource = state.viewModel.costAnalytics;
-  if (resource.status === "unavailable") return <EmptyToolState label="当前 dsh 版本不支持趋势分析。" />;
-  if (resource.status === "loading") return <EmptyToolState label="正在加载趋势分析..." />;
+  const overviewResource = state.viewModel.usageOverview;
+  if (overviewResource.status === "unavailable" && resource.status === "unavailable") return <EmptyToolState label="当前 dsh 版本不支持趋势分析。" />;
+  if (overviewResource.status === "loading" && !overviewResource.data) return <EmptyToolState label="正在加载趋势分析..." />;
+  if (overviewResource.status === "error" && !overviewResource.data && resource.status !== "ready") {
+    return <ToolErrorState label="用量概览加载失败" onRetry={() => { void store.loadUsageOverview(state.ui.analyticsRange); }} />;
+  }
   if (resource.status === "error") {
     return <ToolErrorState label={resource.error ?? "趋势分析加载失败"} onRetry={() => { void store.loadCostAnalytics(); }} />;
   }
-  if (resource.status === "idle") {
+  if (resource.status === "idle" && !overviewResource.data) {
     return <ToolRetryState label="加载趋势/异常" onClick={() => { void store.loadCostAnalytics(); }} />;
   }
   const analytics = resource.data;
-  if (!analytics || (analytics.dailyTrend.length === 0 && analytics.anomalies.length === 0)) {
+  const overview = overviewResource.data;
+  if (!overview && (!analytics || (analytics.dailyTrend.length === 0 && analytics.hourlyTrend.length === 0 && analytics.anomalies.length === 0))) {
     return <EmptyToolState label="暂无趋势数据。" />;
   }
-  return <CostAnalyticsReportView analytics={analytics} />;
+  return <CostAnalyticsReportView store={store} state={state} overview={overview} analytics={analytics} />;
 }
 
-function CostAnalyticsReportView({ analytics }: { analytics: CostAnalyticsView }): ReactNode {
+function CostAnalyticsReportView({
+  store,
+  state,
+  overview,
+  analytics,
+}: {
+  store: MyMeterStore;
+  state: MyMeterStoreState;
+  overview: NonNullable<MyMeterStoreState["viewModel"]["usageOverview"]["data"]> | null;
+  analytics: CostAnalyticsView | null;
+}): ReactNode {
+  const range = state.ui.analyticsRange;
+  const rangeOptions: Array<[AnalyticsRange, string]> = [
+    ["today", "今日"],
+    ["7d", "7天"],
+    ["30d", "30天"],
+  ];
+
   return (
     <section aria-label="趋势和异常" style={{ display: "grid", gap: 8 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, color: DSH_COLORS.secondary }}>
-        <span>总计 {analytics.total.label}</span>
-        <span>{analytics.requestCount} 次请求</span>
+      {state.viewModel.usageOverview.status === "error" && overview ? (
+        <p role="status" style={{ margin: 0, color: DSH_COLORS.secondary, fontSize: 10 }}>
+          用量概览暂时不可用，显示最近一次同步结果。
+        </p>
+      ) : null}
+      {overview ? <UsageOverview overview={overview} /> : null}
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+        <strong style={{ fontSize: 11, color: DSH_COLORS.primary }}>费用趋势</strong>
+        <div role="group" aria-label="趋势范围" style={{ display: "inline-flex", padding: 2, border: `1px solid ${DSH_COLORS.border1}`, borderRadius: 6, background: DSH_COLORS.layer1 }}>
+          {rangeOptions.map(([value, label]) => {
+            const selected = range === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => store.setAnalyticsRange(value)}
+                style={{
+                  minHeight: 24,
+                  padding: "2px 8px",
+                  border: 0,
+                  borderRadius: 4,
+                  background: selected ? DSH_COLORS.layer2 : "transparent",
+                  color: selected ? DSH_COLORS.brand : DSH_COLORS.secondary,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
       </div>
-      <div style={{ display: "grid", gap: 4 }}>
-        <strong style={{ fontSize: 11, color: DSH_COLORS.primary }}>日趋势</strong>
-        {analytics.dailyTrend.map((bucket) => (
-          <div key={bucket.key} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, padding: "6px 8px", border: `1px solid ${DSH_COLORS.border1}`, borderRadius: 6, background: DSH_COLORS.layer1, fontSize: 11 }}>
-            <span style={{ minWidth: 0, overflowWrap: "anywhere", color: DSH_COLORS.secondary }}>
-              <strong style={{ color: DSH_COLORS.primary }}>{bucket.key}</strong> · {bucket.requestCount} 次 · {bucket.statusLabel}
-            </span>
-            <span style={{ textAlign: "right", color: DSH_COLORS.primary, fontVariantNumeric: "tabular-nums" }}>
-              {bucket.amount.label} · {bucket.deltaLabel}
-            </span>
-          </div>
-        ))}
-      </div>
+      {overview ? <AnalyticsChart range={range} trend={overview.trend} /> : null}
       <div style={{ display: "grid", gap: 4 }}>
         <strong style={{ fontSize: 11, color: DSH_COLORS.primary }}>异常</strong>
-        {analytics.anomalies.length === 0 ? (
+        {!analytics || analytics.anomalies.length === 0 ? (
           <span style={{ color: DSH_COLORS.tertiary, fontSize: 11 }}>暂无异常。</span>
         ) : analytics.anomalies.map((anomaly) => (
           <div key={`${anomaly.ruleId}:${anomaly.bucketKey}`} style={{ padding: "6px 8px", border: `1px solid ${anomaly.severity === "warning" ? "color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d97706) 45%, transparent)" : DSH_COLORS.border1}`, borderRadius: 6, background: DSH_COLORS.layer1, color: DSH_COLORS.secondary, fontSize: 11 }}>
@@ -1388,7 +1476,9 @@ export function MyMeterConversationView({
       </div>
       <AccountBalancesPanel balances={state.viewModel.balances} />
       <div style={{ color: DSH_COLORS.primary, background: DSH_COLORS.base }}>
-        <SessionDetailPanel store={store} showNavigation={false} />
+        {state.ui.activePanel === "analytics"
+          ? <GlobalSessionList store={store} />
+          : <SessionDetailPanel store={store} showNavigation={false} />}
       </div>
     </section>
   );

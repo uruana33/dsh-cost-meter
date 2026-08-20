@@ -4,6 +4,8 @@ export { createFileCostEventRepository, createInMemoryCostEventRepository, creat
 export { createHostCostAnalyticsReport } from "./analytics.js";
 export type { CostEventRepository, FileCostEventRepositoryOptions, LedgerAggregator, LedgerRecoveryNotice, } from "./ledger.js";
 export type { CostAnalyticsAnomaly, CostAnalyticsOptions, CostAnalyticsReport, CostAnalyticsTrendBucket, } from "./analytics.js";
+export { createHostUsageOverview } from "./usage-overview.js";
+export type { UsageOverviewOptions, UsageOverviewReport } from "./usage-overview.js";
 export { createAppendOnlyCostEventRepository } from "./append-ledger.js";
 export type { AppendOnlyCostEventRepository, AppendOnlyCostEventRepositoryOptions, AppendOnlyJsonExportOptions, AppendOnlyLedgerCompactionContext, AppendOnlyLedgerCompactionHooks, AppendOnlyLedgerCompactionStage, AppendOnlyLedgerRecoveryNotice, } from "./append-ledger.js";
 export { createCostEventRepositoryForFormat } from "./ledger-format.js";

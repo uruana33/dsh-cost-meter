@@ -654,16 +654,45 @@ describe("overlay visual contract", () => {
         generatedAt: "2026-08-19T00:00:00.000Z",
         global: {
           totalMicroCny: 150_000,
+          totalTokens: 128_000,
           requestCount: 1,
           statusCounts: { estimated: 0, settled: 1, unknown: 0, failed: 0 },
           peakMicroCny: 150_000,
           offpeakMicroCny: 0,
         },
         sessions: [],
-        dailyTrend: [{
-          key: "2026-08-19",
-          startAt: "2026-08-19T00:00:00.000Z",
-          endAt: "2026-08-19T23:59:59.999Z",
+        dailyTrend: [
+          {
+            key: "2026-08-18",
+            startAt: "2026-08-18T00:00:00.000Z",
+            endAt: "2026-08-18T23:59:59.999Z",
+            amountMicroCny: 50_000,
+            requestCount: 1,
+            statusCounts: { estimated: 0, settled: 1, unknown: 0, failed: 0 },
+            peakMicroCny: 50_000,
+            offpeakMicroCny: 0,
+            previousAmountMicroCny: null,
+            deltaMicroCny: null,
+            deltaRatio: null,
+          },
+          {
+            key: "2026-08-19",
+            startAt: "2026-08-19T00:00:00.000Z",
+            endAt: "2026-08-19T23:59:59.999Z",
+            amountMicroCny: 150_000,
+            requestCount: 1,
+            statusCounts: { estimated: 0, settled: 1, unknown: 0, failed: 0 },
+            peakMicroCny: 150_000,
+            offpeakMicroCny: 0,
+            previousAmountMicroCny: 50_000,
+            deltaMicroCny: 100_000,
+            deltaRatio: 3,
+          },
+        ],
+        hourlyTrend: [{
+          key: "2026-08-19T10",
+          startAt: "2026-08-19T10:00:00.000Z",
+          endAt: "2026-08-19T10:59:59.999Z",
           amountMicroCny: 150_000,
           requestCount: 1,
           statusCounts: { estimated: 0, settled: 1, unknown: 0, failed: 0 },
@@ -673,7 +702,6 @@ describe("overlay visual contract", () => {
           deltaMicroCny: null,
           deltaRatio: null,
         }],
-        hourlyTrend: [],
         anomalies: [{
           ruleId: "daily_spend_spike",
           severity: "warning" as const,
@@ -682,6 +710,32 @@ describe("overlay visual contract", () => {
           explanation: "单日费用突增",
         }],
       }),
+      getUsageOverview: async ({ range }: { range: "today" | "7d" | "30d" }) => {
+        const count = range === "today" ? 24 : range === "7d" ? 7 : 30;
+        const keys = range === "today"
+          ? Array.from({ length: count }, (_, index) => String(index).padStart(2, "0"))
+          : Array.from({ length: count }, (_, index) => `2026-08-${String(20 - count + index + 1).padStart(2, "0")}`);
+        return {
+          range,
+          timeZone: "Asia/Shanghai",
+          generatedAt: "2026-08-20T00:00:00.000Z",
+          startAt: "2026-08-20T00:00:00.000Z",
+          endAt: "2026-08-21T00:00:00.000Z",
+          totals: { amountMicroCny: 150_000, totalTokens: 128_000, requestCount: 1, pricedRequestCount: 1, unknownRequestCount: 0, coverage: "complete" as const },
+          trend: keys.map((key) => ({
+            key,
+            startAt: "2026-08-20T00:00:00.000Z",
+            endAt: "2026-08-20T01:00:00.000Z",
+            amountMicroCny: range === "today" && key === "10" ? 150_000 : 0,
+            totalTokens: range === "today" && key === "10" ? 128_000 : 0,
+            requestCount: range === "today" && key === "10" ? 1 : 0,
+            pricedRequestCount: range === "today" && key === "10" ? 1 : 0,
+            unknownRequestCount: 0,
+            coverage: range === "today" && key === "10" ? "complete" as const : "unavailable" as const,
+          })),
+          topModels: [{ provider: "deepseek", model: "deepseek-chat", amountMicroCny: 150_000, totalTokens: 128_000, requestCount: 1, pricedRequestCount: 1, unknownRequestCount: 0, coverage: "complete" as const }],
+        };
+      },
       exportLedger: async () => "{}",
     });
     const store = createMyMeterStore({ remote, storage: new MemoryStorage() });
@@ -700,8 +754,23 @@ describe("overlay visual contract", () => {
       fireEvent.click(screen.getByRole("tab", { name: "趋势/异常" }));
     });
     const analytics = await screen.findByRole("region", { name: "趋势和异常" });
+    const overview = screen.getByRole("region", { name: "用量概览" });
+    expect(overview).toHaveTextContent("费用¥0.150");
+    expect(overview).toHaveTextContent("Token128,000");
+    expect(overview).toHaveTextContent("请求数1");
+    expect(overview).toHaveTextContent("Coverage完整");
+    expect(screen.getByRole("img", { name: "今日按小时费用趋势" })).toBeTruthy();
     expect(analytics).toHaveTextContent("2026-08-19");
     expect(analytics).toHaveTextContent("单日费用突增");
+    expect(screen.getByRole("button", { name: "今日" })).toHaveAttribute("aria-pressed", "true");
+
+    expect(analytics).toHaveTextContent("10:00");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "7天" }));
+    });
+    expect(await screen.findByRole("img", { name: "7天按天费用趋势" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "7天" })).toHaveAttribute("aria-pressed", "true");
 
     store.destroy();
   });

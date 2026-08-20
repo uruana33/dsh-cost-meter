@@ -70,7 +70,7 @@ DeepSeek 原币种是 CNY，海外厂商原币种是 USD。dsh-cost-meter 保留
 
 ## DeepSeek 余额怎么读取？
 
-Host 侧读取 `llm-deepseek` 配置的 credential 引用，默认回退到 `DEEPSEEK_API_KEY`，请求 `/user/balance`，默认缓存 5 分钟。API Key 不会进入 Client DTO、浏览器状态或日志。
+Host 侧读取 `llm-deepseek` 配置的 credential 引用，默认回退到 `DEEPSEEK_API_KEY`，请求 `/user/balance`，默认缓存 5 分钟。余额请求默认 10 秒超时，并发请求会合并，失败会短暂退避；用量页的“刷新余额”会强制绕过 TTL。API Key 不会进入 Client DTO、浏览器状态或日志。
 
 ## 为什么其他厂商没有余额？
 
@@ -94,7 +94,7 @@ Host 侧读取 `llm-deepseek` 配置的 credential 引用，默认回退到 `DEE
 
 ## 为什么费用树和趋势/异常不是每次刷新都返回？
 
-Client 默认每 200ms 轮询轻量主快照。费用树和 analytics 需要扫描或聚合更多账本数据，所以通过 `getSessionCostTree()` 和 `getCostAnalytics()` 按需加载，避免把大对象塞进每次轮询。费用树会报告孤儿父节点和循环关系；异常报告当前覆盖日费用突增、小时集中、unknown 比例和 failed 比例，它们是本地提示，不是厂商审计结论。
+Client 默认每 200ms 轮询轻量主快照。费用树、用量概览和 analytics 需要扫描或聚合更多账本数据，所以通过 `getSessionCostTree()`、`getUsageOverview()` 和 `getCostAnalytics()` 按需加载，避免把大对象塞进每次轮询。用量概览提供今日/7 天/30 天切换，今日按小时、其他范围按自然日；未知价格显示 `—`，coverage 会明确标记完整、部分计价或不可用。费用树会报告孤儿父节点和循环关系；异常报告当前覆盖日费用突增、小时集中、unknown 比例和 failed 比例，它们是本地提示，不是厂商审计结论。
 
 ## 导出的 CSV/JSON 会包含对话内容吗？
 

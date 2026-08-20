@@ -84,7 +84,7 @@ async function mountMyMeterUi(ctx: MyMeterCordisClientContext): Promise<() => Pr
       (props: Omit<ShellOverlayProps, "store" | "onOpenTokenBilling">) => createElement(ShellOverlay, {
         store,
         ...props,
-        onOpenTokenBilling: openTokenBillingView,
+        onOpenTokenBilling: () => openTokenBillingView(store),
       }),
     )),
     ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
@@ -107,9 +107,10 @@ async function mountMyMeterUi(ctx: MyMeterCordisClientContext): Promise<() => Pr
   };
 }
 
-function openTokenBillingView(): void {
+function openTokenBillingView(store: ReturnType<typeof createMyMeterStore>): void {
   if (typeof document === "undefined") return;
   const tab = Array.from(document.querySelectorAll<HTMLButtonElement>('button[role="tab"]'))
     .find((button) => button.textContent?.trim() === TOKEN_BILLING_VIEW_LABEL);
   tab?.click();
+  queueMicrotask(() => store.setActivePanel("analytics"));
 }

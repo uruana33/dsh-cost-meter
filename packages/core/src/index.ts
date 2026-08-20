@@ -105,6 +105,19 @@ export type { DeepSeekModelId, PricingCatalogKind, PricingCatalogVersion, XaiMod
 export {
   createCostAnalyticsReport,
 } from "./analytics";
+export { createUsageOverview } from "./usage-overview";
+export type {
+  UsageOverviewCostStatus,
+  UsageOverviewCoverage,
+  UsageOverviewEventInput,
+  UsageOverviewModelSummary,
+  UsageOverviewOptions,
+  UsageOverviewQuery,
+  UsageOverviewRange,
+  UsageOverviewReport,
+  UsageOverviewTotal,
+  UsageOverviewTrendBucket,
+} from "./usage-overview";
 export type {
   CostAnalyticsAnomaly,
   CostAnalyticsAnomalyRuleId,

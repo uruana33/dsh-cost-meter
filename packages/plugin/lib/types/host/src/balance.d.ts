@@ -6,6 +6,8 @@ export interface DeepSeekBalanceServiceOptions {
     fetchImpl?: typeof fetch;
     now?: () => number;
     cacheTtlMs?: number;
+    requestTimeoutMs?: number;
+    failureBackoffMs?: readonly number[];
 }
 export interface BalanceRequestOptions {
     forceRefresh?: boolean;
@@ -14,4 +16,4 @@ export interface DeepSeekBalanceService {
     getSnapshot(options?: BalanceRequestOptions): Promise<BalanceSnapshot>;
     clearCache(): void;
 }
-export declare function createDeepSeekBalanceService({ baseUrl, apiKey, resolveApiKey, fetchImpl, now, cacheTtlMs, }: DeepSeekBalanceServiceOptions): DeepSeekBalanceService;
+export declare function createDeepSeekBalanceService({ baseUrl, apiKey, resolveApiKey, fetchImpl, now, cacheTtlMs, requestTimeoutMs, failureBackoffMs, }: DeepSeekBalanceServiceOptions): DeepSeekBalanceService;

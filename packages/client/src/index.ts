@@ -15,6 +15,11 @@ export type {
   RemoteCostAnalyticsStatusCounts,
   RemoteCostAnalyticsTotal,
   RemoteCostAnalyticsTrendBucket,
+  RemoteUsageOverviewModelSummary,
+  RemoteUsageOverviewQuery,
+  RemoteUsageOverviewReport,
+  RemoteUsageOverviewTotal,
+  RemoteUsageOverviewTrendBucket,
   RemoteExchangeRateSnapshot,
   RemoteLedgerExportFormat,
   RemoteLedgerSummary,
@@ -31,6 +36,8 @@ export type {
   SessionSort,
   StatusFilter,
   StorageLike,
+  UsageOverviewCoverage,
+  UsageOverviewRange,
 } from "./store";
 export {
   DEFAULT_SETTINGS,
@@ -81,6 +88,9 @@ export { MyMeterUpdateControl } from "./update-ui";
 export type { MyMeterUpdateControlProps } from "./update-ui";
 export { ShellOverlay } from "./shell-overlay";
 export type { SessionListSnapshot, ShellOverlayProps, UseSessions } from "./shell-overlay";
+export { AnalyticsChart } from "./analytics-chart";
+export type { AnalyticsRange } from "./analytics-chart";
+export { UsageOverview } from "./usage-overview";
 export type {
   AmountView,
   BalanceView,
@@ -94,11 +104,15 @@ export type {
   MyMeterViewModel,
   OverlayView,
   PricingZoneCountdownView,
+  CostAnalyticsAnomalyView,
+  CostAnalyticsView,
+  CostTrendBucketView,
   SessionDetailView,
   SessionStageView,
   SessionSummaryView,
   SessionTurnView,
   TokenBucketView,
+  UsageOverviewView,
   CurrencyTotalView,
   ExchangeRateView,
 } from "./view-model";
