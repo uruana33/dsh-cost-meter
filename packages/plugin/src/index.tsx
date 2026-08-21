@@ -39,6 +39,7 @@ import {
   createHostUsageAdapter,
   createBillingReadModel,
   createHostCostAnalyticsReport,
+  createHostUsageOverview,
   createInMemoryCostEventRepository,
   createLedgerAggregator,
   exportCostEventLedger,
@@ -67,6 +68,8 @@ import {
   type RemoteSessionDetail,
   type RemoteSessionSummary,
   type RemoteTurn,
+  type RemoteUsageOverviewQuery,
+  type RemoteUsageOverviewReport,
   type StorageLike,
 } from "../../client/src/index";
 import type { RemoteSessionStage } from "../../client/src/store";
@@ -117,7 +120,9 @@ export interface MyMeterSlotContext {
   register(slot: "shell.overlay" | (string & {}), contribution: ReactNode): () => void;
 }
 
-export type MyMeterBalanceProvider = () => Promise<MyMeterBalanceDto | BalanceSnapshot>;
+export type MyMeterBalanceProvider = (
+  options?: { forceRefresh?: boolean },
+) => Promise<MyMeterBalanceDto | BalanceSnapshot>;
 
 export interface MyMeterProviderDescriptor {
   id: string;
@@ -153,8 +158,10 @@ export interface MyMeterHostRemoteContribution extends MyMeterRemote {
   getSessionDetail(sessionId: string): Promise<RemoteSessionDetail | null>;
   getSessionCostTree(): Promise<RemoteSessionCostTree>;
   getCostAnalytics(): Promise<RemoteCostAnalyticsReport>;
+  getUsageOverview(query: RemoteUsageOverviewQuery): Promise<RemoteUsageOverviewReport>;
   exportLedger(format: RemoteLedgerExportFormat): Promise<string>;
   getBalance(): Promise<MyMeterRemoteSnapshot["balance"]>;
+  refreshBalance(): Promise<MyMeterRemoteSnapshot["balance"]>;
   getSettings(): Promise<Record<string, unknown>>;
   refreshExchangeRate(): Promise<RemoteExchangeRateSnapshot>;
 }
@@ -198,6 +205,7 @@ export function createMyMeterHostRuntime({
   contextBreakdown,
   repository: configuredRepository,
   exchangeRate: configuredExchangeRate,
+  now: configuredNow,
   afterLedgerCommit,
   onAfterLedgerCommitError,
 }: MyMeterHostRuntimeOptions): MyMeterHostRuntime {
@@ -218,6 +226,7 @@ export function createMyMeterHostRuntime({
   let batchDepth = 0;
   let ledgerDirty = false;
   let snapshotDirty = false;
+  let ledgerGeneration = 1;
   let installed = true;
   let lastBalance: MyMeterRemoteSnapshot["balance"] = {
     status: "unavailable",
@@ -247,6 +256,7 @@ export function createMyMeterHostRuntime({
   let exchangeRateGeneration = 0;
   const activeRequestGenerations = new Map<string, number>();
   const detailCache = new Map<string, { readonly key: string; readonly detail: RemoteSessionDetail }>();
+  const usageOverviewCache = new Map<string, RemoteUsageOverviewReport>();
   const readSessionContext = (sessionId: string): RemoteContextBreakdown | null =>
     cloneRemoteContextBreakdown(contextBreakdown?.(sessionId) ?? null);
   const bumpActiveRequestGeneration = (sessionId: string): void => {
@@ -304,7 +314,8 @@ export function createMyMeterHostRuntime({
         }
       : undefined;
     cachedProviderFingerprint = providerFingerprint(configuredProviders);
-    cachedSnapshot = deepFreeze(createRemoteSnapshot(
+    cachedSnapshot = deepFreeze({
+      ...createRemoteSnapshot(
       journal.list(),
       aggregateLedger(),
       lastBalance,
@@ -313,7 +324,9 @@ export function createMyMeterHostRuntime({
       activeRequests,
       configuredProviders,
       (sessionId) => readModel.getSessionEvents(sessionId),
-    ));
+      ),
+      ledgerGeneration,
+    });
     cachedContextFingerprint = contextBreakdown
       ? contextFingerprint(
           Object.keys(cachedSnapshot.details),
@@ -369,6 +382,8 @@ export function createMyMeterHostRuntime({
     const current = journal.upsert(event);
     if (sameCostEvent(previous, current)) return false;
     readModel.upsert(current);
+    ledgerGeneration += 1;
+    usageOverviewCache.clear();
     ledgerDirty = true;
     dirtyEventKeys.add(current.eventKey);
     snapshotDirty = true;
@@ -528,6 +543,26 @@ export function createMyMeterHostRuntime({
     async getCostAnalytics() {
       return deepFreeze(createHostCostAnalyticsReport(journal.list().map(toHostCostEventInput)));
     },
+    async getUsageOverview(query) {
+      const generatedAt = configuredNow?.() ?? new Date();
+      const timeZone = normalizeOverviewTimeZone(query.timeZone);
+      const dayKey = new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(generatedAt);
+      const cacheKey = JSON.stringify([ledgerGeneration, query.range, timeZone, dayKey]);
+      const cached = usageOverviewCache.get(cacheKey);
+      if (cached) return cached;
+      const report = deepFreeze(createHostUsageOverview(journal.list().map(toHostCostEventInput), {
+        range: query.range,
+        timeZone,
+        now: generatedAt,
+      })) as RemoteUsageOverviewReport;
+      usageOverviewCache.set(cacheKey, report);
+      return report;
+    },
     async exportLedger(format) {
       return exportCostEventLedger({
         format,
@@ -537,6 +572,16 @@ export function createMyMeterHostRuntime({
     async getBalance() {
       if (balance) {
         const nextBalance = toRemoteBalance(await balance());
+        if (!sameRemoteBalance(lastBalance, nextBalance)) {
+          lastBalance = nextBalance;
+          emitSnapshot();
+        }
+      }
+      return lastBalance;
+    },
+    async refreshBalance() {
+      if (balance) {
+        const nextBalance = toRemoteBalance(await balance({ forceRefresh: true }));
         if (!sameRemoteBalance(lastBalance, nextBalance)) {
           lastBalance = nextBalance;
           emitSnapshot();
@@ -612,6 +657,16 @@ export function createMyMeterHostRuntime({
       listeners.clear();
     },
   };
+}
+
+function normalizeOverviewTimeZone(value: string | undefined): string {
+  const candidate = value?.trim() || "Asia/Shanghai";
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: candidate }).format(0);
+    return candidate;
+  } catch {
+    return "Asia/Shanghai";
+  }
 }
 
 function sameCostEvent(left: CostEvent | undefined, right: CostEvent): boolean {

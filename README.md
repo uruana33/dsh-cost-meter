@@ -47,9 +47,9 @@ Token 计费页按会话展示余额、会话总费用、预算状态、缓存�
 - Token 分桶计费：区分输入 Token（无缓存）、输入 Token（缓存）和输出 Token；推理 Token 明确标注为已包含在输出费用中。
 - 实时小票和最终结算：生成中按流式增量估算，最终 `assistant/message.usage` 到达后替换为已结算事件。
 - 会话级追踪：展示当前请求、当前会话、本机累计、会话列表、阶段 Tab、轮次明细、模型、推理强度、Agent 预设和价格版本。
-- 成本洞察：会话页和全局页展示预算进度、DeepSeek 峰谷倒计时；会话级缓存命中节省在单价明确时展示，费用树/趋势/导出则通过按需 Remote 接口打开。
+- 成本洞察：会话页和全局页展示预算进度、DeepSeek 峰谷倒计时；会话级缓存命中节省在单价明确时展示。全局页提供费用、Token、请求数和 coverage 摘要，并支持今日/7 天/30 天的轻量趋势图与主要模型排行。
 - 本地持久账本：发布包默认写入 `$DSH_HOME/mymeter/ledger.json`，账本格式默认是 `json`，重启可恢复聚合结果；可用 `ledgerFormat: append` 显式启用 append。
-- 按需分析接口：Host Remote 提供费用树、趋势/异常报告和 CSV/JSON 导出，默认快照不携带这些大对象。
+- 按需分析接口：Host Remote 提供费用树、用量概览、趋势/异常报告和 CSV/JSON 导出，默认快照不携带这些大对象。
 - Host/Client 分离：API Key、账本和余额请求只在 Host 侧；Client 只接收脱敏展示 DTO。
 - dsh 原生体验：注册 `shell.overlay`、`conversation.view` 和 dsh 插件配置卡，视觉跟随 dsh 全局主题变量。
 

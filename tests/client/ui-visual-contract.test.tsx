@@ -7,6 +7,7 @@ import {
   MyMeterConversationView,
   MyMeterSettingsCard,
   SessionDetailPanel,
+  AnalyticsChart,
   createMockRemote,
   createMyMeterStore,
   snapOverlayPosition,
@@ -36,7 +37,100 @@ afterEach(() => {
 });
 
 describe("overlay visual contract", () => {
-  test("renders Token计费 details with dsh theme tokens and without overlay navigation", () => {
+  test("keeps the hourly trend axis readable by showing spaced tick labels", () => {
+    const trend = Array.from({ length: 24 }, (_, index) => ({
+      key: String(index).padStart(2, "0"),
+      startAt: "2026-08-20T00:00:00.000Z",
+      endAt: "2026-08-20T01:00:00.000Z",
+      amount: { microCny: index * 100, label: "¥0.000", detailLabel: "¥0.000000" },
+      totalTokens: index,
+      requestCount: index,
+      coverage: "complete" as const,
+      models: [],
+    }));
+
+    render(<AnalyticsChart range="today" trend={trend} />);
+
+    const chart = screen.getByRole("img", { name: "今日按小时费用趋势" });
+    expect(chart.querySelectorAll("rect")).toHaveLength(24);
+    expect([...chart.querySelectorAll("text")].map((item) => item.textContent)).toEqual([
+      "00:00",
+      "03:00",
+      "06:00",
+      "09:00",
+      "12:00",
+      "15:00",
+      "18:00",
+      "21:00",
+    ]);
+  });
+
+  test("uses model colors and keeps the chart drawing surface stable across ranges", () => {
+    const amount = (microCny: number) => ({ microCny, label: `¥${(microCny / 1_000_000).toFixed(3)}`, detailLabel: `¥${(microCny / 1_000_000).toFixed(6)}` });
+    const model = (provider: string, name: string, microCny: number) => ({
+      provider,
+      model: name,
+      amount: amount(microCny),
+      totalTokens: microCny,
+      requestCount: 1,
+      pricedRequestCount: 1,
+      unknownRequestCount: 0,
+      coverage: "complete" as const,
+    });
+    const today = Array.from({ length: 24 }, (_, index) => ({
+      key: String(index).padStart(2, "0"),
+      startAt: "2026-08-20T00:00:00.000Z",
+      endAt: "2026-08-20T01:00:00.000Z",
+      amount: amount(index === 0 ? 150 : 0),
+      totalTokens: index === 0 ? 150 : 0,
+      requestCount: index === 0 ? 2 : 0,
+      coverage: index === 0 ? "complete" as const : "unavailable" as const,
+      models: index === 0 ? [model("deepseek", "deepseek-chat", 100), model("openai", "gpt-4.1", 50)] : [],
+    }));
+    const sevenDays = today.slice(0, 7).map((bucket, index) => ({ ...bucket, key: `2026-08-${String(index + 14).padStart(2, "0")}` }));
+    const thirtyDays = Array.from({ length: 30 }, (_, index) => ({ ...today[0]!, key: `2026-08-${String(index + 1).padStart(2, "0")}`, models: [] }));
+
+    const { rerender } = render(<AnalyticsChart range="today" trend={today} />);
+    const chart = screen.getByRole("img", { name: "今日按小时费用趋势" });
+    expect(screen.getByRole("list", { name: "模型图例" })).toHaveTextContent("deepseek · deepseek-chat");
+    expect(screen.getByRole("list", { name: "模型图例" })).toHaveTextContent("openai · gpt-4.1");
+    expect(new Set([...chart.querySelectorAll("rect")].map((item) => item.getAttribute("fill"))).size).toBeGreaterThan(1);
+    expect(chart.getAttribute("viewBox")).toBe("0 0 640 132");
+
+    rerender(<AnalyticsChart range="7d" trend={sevenDays} />);
+    expect(screen.getByRole("img", { name: "7天按天费用趋势" }).getAttribute("viewBox")).toBe("0 0 640 132");
+    rerender(<AnalyticsChart range="30d" trend={thirtyDays} />);
+    expect(screen.getByRole("img", { name: "30天按天费用趋势" }).getAttribute("viewBox")).toBe("0 0 640 132");
+  });
+
+  test("shortens daily axis labels so the recent-seven-days dates do not overlap", () => {
+    const trend = Array.from({ length: 7 }, (_, index) => ({
+      key: `2026-08-${String(index + 14).padStart(2, "0")}`,
+      startAt: "2026-08-14T00:00:00.000Z",
+      endAt: "2026-08-15T00:00:00.000Z",
+      amount: { microCny: 100, label: "¥0.000", detailLabel: "¥0.000100" },
+      totalTokens: 10,
+      requestCount: 1,
+      coverage: "complete" as const,
+      models: [],
+    }));
+
+    render(<AnalyticsChart range="7d" trend={trend} />);
+
+    const chart = screen.getByRole("img", { name: "7天按天费用趋势" });
+    expect([...chart.querySelectorAll("text")].map((item) => item.textContent)).toEqual([
+      "08-14",
+      "08-15",
+      "08-16",
+      "08-17",
+      "08-18",
+      "08-19",
+      "08-20",
+    ]);
+    expect(chart.querySelector("title")?.textContent).toContain("2026-08-14");
+  });
+
+  test("renders Token计费 details with the same page navigation for every entry", () => {
     const store = createMyMeterStore({
       remote: createMockRemote("billing"),
       storage: new MemoryStorage(),
@@ -46,7 +140,10 @@ describe("overlay visual contract", () => {
     expect(screen.getByRole("region", { name: "Token计费" })).toBeTruthy();
     expect(screen.queryByText("液晶")).toBeNull();
     expect(screen.getByText(/Token 计费明细/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "全部会话" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "当前会话" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "全部会话" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "费用树" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "趋势/异常" })).toBeTruthy();
     expect(store.getState().ui.selectedSessionId).toBe("sess-1");
 
     const region = screen.getByRole("region", { name: "Token计费" });
@@ -630,40 +727,83 @@ describe("overlay visual contract", () => {
     store.destroy();
   });
 
-  test("opens on-demand cost tree and analytics views from the global tool tabs", async () => {
+  test("opens cost tree and usage trends when entering Token计费 directly", async () => {
     const remote = createMockRemote("billing");
     const rootSummary = toolLedgerSummary("root", 150_000);
+    const childSummary = toolLedgerSummary("child", 50_000);
     Object.assign(remote, {
       getSessionCostTree: async () => ({
         roots: [{
           id: "root",
           title: "主会话",
-          childSessionIds: [],
+          childSessionIds: ["child"],
           depth: 0,
           path: ["root"],
           summary: rootSummary,
-          subtreeSummary: rootSummary,
+          subtreeSummary: toolLedgerSummary("root", 200_000),
           orphaned: false,
           cyclic: false,
         }],
-        nodes: {},
-        summary: rootSummary,
+        nodes: {
+          child: {
+            id: "child",
+            title: "子 Agent 会话",
+            parentSessionId: "root",
+            childSessionIds: [],
+            depth: 1,
+            path: ["root", "child"],
+            summary: childSummary,
+            subtreeSummary: childSummary,
+            orphaned: false,
+            cyclic: false,
+          },
+        },
+        summary: toolLedgerSummary("all", 200_000),
         anomalies: { missingParents: [], cycles: [] },
       }),
       getCostAnalytics: async () => ({
         generatedAt: "2026-08-19T00:00:00.000Z",
         global: {
           totalMicroCny: 150_000,
+          totalTokens: 128_000,
           requestCount: 1,
           statusCounts: { estimated: 0, settled: 1, unknown: 0, failed: 0 },
           peakMicroCny: 150_000,
           offpeakMicroCny: 0,
         },
         sessions: [],
-        dailyTrend: [{
-          key: "2026-08-19",
-          startAt: "2026-08-19T00:00:00.000Z",
-          endAt: "2026-08-19T23:59:59.999Z",
+        dailyTrend: [
+          {
+            key: "2026-08-18",
+            startAt: "2026-08-18T00:00:00.000Z",
+            endAt: "2026-08-18T23:59:59.999Z",
+            amountMicroCny: 50_000,
+            requestCount: 1,
+            statusCounts: { estimated: 0, settled: 1, unknown: 0, failed: 0 },
+            peakMicroCny: 50_000,
+            offpeakMicroCny: 0,
+            previousAmountMicroCny: null,
+            deltaMicroCny: null,
+            deltaRatio: null,
+          },
+          {
+            key: "2026-08-19",
+            startAt: "2026-08-19T00:00:00.000Z",
+            endAt: "2026-08-19T23:59:59.999Z",
+            amountMicroCny: 150_000,
+            requestCount: 1,
+            statusCounts: { estimated: 0, settled: 1, unknown: 0, failed: 0 },
+            peakMicroCny: 150_000,
+            offpeakMicroCny: 0,
+            previousAmountMicroCny: 50_000,
+            deltaMicroCny: 100_000,
+            deltaRatio: 3,
+          },
+        ],
+        hourlyTrend: [{
+          key: "2026-08-19T10",
+          startAt: "2026-08-19T10:00:00.000Z",
+          endAt: "2026-08-19T10:59:59.999Z",
           amountMicroCny: 150_000,
           requestCount: 1,
           statusCounts: { estimated: 0, settled: 1, unknown: 0, failed: 0 },
@@ -673,7 +813,6 @@ describe("overlay visual contract", () => {
           deltaMicroCny: null,
           deltaRatio: null,
         }],
-        hourlyTrend: [],
         anomalies: [{
           ruleId: "daily_spend_spike",
           severity: "warning" as const,
@@ -682,27 +821,111 @@ describe("overlay visual contract", () => {
           explanation: "单日费用突增",
         }],
       }),
+      getUsageOverview: async ({ range }: { range: "today" | "7d" | "30d" }) => {
+        const count = range === "today" ? 24 : range === "7d" ? 7 : 30;
+        const keys = range === "today"
+          ? Array.from({ length: count }, (_, index) => String(index).padStart(2, "0"))
+          : Array.from({ length: count }, (_, index) => `2026-08-${String(20 - count + index + 1).padStart(2, "0")}`);
+        return {
+          range,
+          timeZone: "Asia/Shanghai",
+          generatedAt: "2026-08-20T00:00:00.000Z",
+          startAt: "2026-08-20T00:00:00.000Z",
+          endAt: "2026-08-21T00:00:00.000Z",
+          totals: { amountMicroCny: 150_000, totalTokens: 128_000, requestCount: 1, pricedRequestCount: 1, unknownRequestCount: 0, coverage: "complete" as const },
+          trend: keys.map((key) => ({
+            key,
+            startAt: "2026-08-20T00:00:00.000Z",
+            endAt: "2026-08-20T01:00:00.000Z",
+            amountMicroCny: range === "today" && key === "10" ? 150_000 : 0,
+            totalTokens: range === "today" && key === "10" ? 128_000 : 0,
+            requestCount: range === "today" && key === "10" ? 1 : 0,
+            pricedRequestCount: range === "today" && key === "10" ? 1 : 0,
+            unknownRequestCount: 0,
+            coverage: range === "today" && key === "10" ? "complete" as const : "unavailable" as const,
+          })),
+          topModels: [{ provider: "deepseek", model: "deepseek-chat", amountMicroCny: 150_000, totalTokens: 128_000, requestCount: 1, pricedRequestCount: 1, unknownRequestCount: 0, coverage: "complete" as const }],
+        };
+      },
       exportLedger: async () => "{}",
     });
     const store = createMyMeterStore({ remote, storage: new MemoryStorage() });
 
-    render(<GlobalSessionList store={store} />);
-    expect(screen.getByRole("button", { name: "下载JSON账本" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "下载CSV账本" })).toBeEnabled();
+    render(<MyMeterConversationView store={store} sessionId="sess-1" />);
+    expect(screen.getByRole("tab", { name: "当前会话" })).toHaveAttribute("aria-selected", "true");
 
     await act(async () => {
       fireEvent.click(screen.getByRole("tab", { name: "费用树" }));
     });
+    expect(screen.getByRole("button", { name: "下载JSON账本" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "下载CSV账本" })).toBeEnabled();
     expect(await screen.findByRole("region", { name: "费用树" })).toHaveTextContent("主会话");
-    expect(screen.getByRole("region", { name: "费用树" })).toHaveTextContent("子树 ¥0.150");
+    expect(screen.getByRole("region", { name: "费用树" })).toHaveTextContent("子 Agent 会话");
+    expect(screen.getByRole("region", { name: "费用树" })).toHaveTextContent("含子 Agent ¥0.200");
+    expect(screen.queryByLabelText("搜索会话")).toBeNull();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("tab", { name: "趋势/异常" }));
     });
     const analytics = await screen.findByRole("region", { name: "趋势和异常" });
+    const overview = screen.getByRole("region", { name: "用量概览" });
+    expect(overview).toHaveTextContent("费用¥0.150");
+    expect(overview).toHaveTextContent("Token128,000");
+    expect(overview).toHaveTextContent("请求数1");
+    expect(overview).toHaveTextContent("Coverage完整");
+    expect(screen.getByRole("img", { name: "今日按小时费用趋势" })).toBeTruthy();
     expect(analytics).toHaveTextContent("2026-08-19");
     expect(analytics).toHaveTextContent("单日费用突增");
+    expect(screen.getByRole("button", { name: "今日" })).toHaveAttribute("aria-pressed", "true");
 
+    expect(screen.getByRole("img", { name: /10:00/ })).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "7天" }));
+    });
+    expect(await screen.findByRole("img", { name: "7天按天费用趋势" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "7天" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("tab", { name: "全部会话" }));
+    expect(screen.getByLabelText("搜索会话")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "费用树" })).toBeNull();
+
+    store.destroy();
+  });
+
+  test("does not repeat ordinary sessions in the cost tree without parent-child relationships", async () => {
+    const remote = createMockRemote("settled");
+    const summary = toolLedgerSummary("standalone", 150_000);
+    Object.assign(remote, {
+      getSessionCostTree: async () => ({
+        roots: [{
+          id: "standalone",
+          title: "普通会话",
+          childSessionIds: [],
+          depth: 0,
+          path: ["standalone"],
+          summary,
+          subtreeSummary: summary,
+          orphaned: false,
+          cyclic: false,
+        }],
+        nodes: {},
+        summary,
+        anomalies: { missingParents: [], cycles: [] },
+      }),
+    });
+    const store = createMyMeterStore({ remote, storage: new MemoryStorage() });
+
+    render(<MyMeterConversationView store={store} sessionId="sess-1" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("tab", { name: "费用树" }));
+    });
+
+    expect(await screen.findByText("暂无子 Agent 费用关系。普通会话请在会话列表中查看。")).toBeTruthy();
+    expect(screen.queryByText("普通会话")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "全部会话" }));
+    expect(screen.getByLabelText("搜索会话")).toBeTruthy();
     store.destroy();
   });
 

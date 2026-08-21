@@ -1,4 +1,4 @@
-import type { MyMeterRemote, MyMeterRemoteSnapshot, RemoteCostAnalyticsReport, RemoteExchangeRateSnapshot, RemoteLedgerExportFormat, RemoteSessionCostTree, RemoteSessionDetail, RemoteSessionSummary } from "../../client/src/index";
+import type { MyMeterRemote, MyMeterRemoteSnapshot, RemoteCostAnalyticsReport, RemoteExchangeRateSnapshot, RemoteLedgerExportFormat, RemoteSessionCostTree, RemoteSessionDetail, RemoteSessionSummary, RemoteUsageOverviewQuery, RemoteUsageOverviewReport } from "../../client/src/index";
 export type RemoteResult<T> = {
     readonly ok: true;
     readonly value: T;
@@ -58,8 +58,10 @@ export interface MyMeterTypertRemoteNamespace {
     getSessionDetail(sessionId: string): Promise<RemoteResult<RemoteSessionDetail | null>>;
     getSessionCostTree?(): Promise<RemoteResult<RemoteSessionCostTree>>;
     getCostAnalytics?(): Promise<RemoteResult<RemoteCostAnalyticsReport>>;
+    getUsageOverview?(query: RemoteUsageOverviewQuery): Promise<RemoteResult<RemoteUsageOverviewReport>>;
     exportLedger?(format: RemoteLedgerExportFormat): Promise<RemoteResult<string>>;
     getBalance(): Promise<RemoteResult<MyMeterRemoteSnapshot["balance"]>>;
+    refreshBalance?(): Promise<RemoteResult<MyMeterRemoteSnapshot["balance"]>>;
     getSettings(): Promise<RemoteResult<Record<string, unknown>>>;
     refreshExchangeRate?(): Promise<RemoteResult<RemoteExchangeRateSnapshot>>;
 }
@@ -71,11 +73,14 @@ export interface MyMeterTypertRemoteAdapter extends MyMeterRemote {
     refresh(): Promise<void>;
     getSessionCostTree(): Promise<RemoteSessionCostTree>;
     getCostAnalytics(): Promise<RemoteCostAnalyticsReport>;
+    getUsageOverview(query: RemoteUsageOverviewQuery): Promise<RemoteUsageOverviewReport>;
     exportLedger(format: RemoteLedgerExportFormat): Promise<string>;
+    refreshBalance(): Promise<MyMeterRemoteSnapshot["balance"]>;
     dispose(): void;
 }
 export interface MyMeterTypertRemoteAdapterOptions {
     pollIntervalMs?: number;
+    balancePollIntervalMs?: number;
 }
 export declare const MYMETER_SERVICE_KEY = "mymeter";
 export declare const MYMETER_PACKAGE_NAME = "@mymeter/dsh-cost-meter";

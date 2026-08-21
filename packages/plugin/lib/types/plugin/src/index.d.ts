@@ -2,7 +2,7 @@ import { type ReactNode } from "react";
 import { type CostEvent } from "../../core/src/index";
 import { type BalanceSnapshot, type CostEventRepository, type LedgerAggregation, type LedgerSummary } from "../../host/src/index";
 import type { MyMeterBalanceDto } from "../../shared/src/index";
-import { type MyMeterRemote, type MyMeterRemoteSnapshot, type RemoteCostAnalyticsReport, type RemoteContextBreakdown, type RemoteExchangeRateSnapshot, type RemoteLedgerExportFormat, type RemoteSessionCostTree, type RemoteSessionDetail, type RemoteSessionSummary, type StorageLike } from "../../client/src/index";
+import { type MyMeterRemote, type MyMeterRemoteSnapshot, type RemoteCostAnalyticsReport, type RemoteContextBreakdown, type RemoteExchangeRateSnapshot, type RemoteLedgerExportFormat, type RemoteSessionCostTree, type RemoteSessionDetail, type RemoteSessionSummary, type RemoteUsageOverviewQuery, type RemoteUsageOverviewReport, type StorageLike } from "../../client/src/index";
 export interface DshEventContext {
     on(event: string, listener: (payload: unknown) => void): () => void;
 }
@@ -40,7 +40,9 @@ export interface MyMeterSessionPersistenceService {
 export interface MyMeterSlotContext {
     register(slot: "shell.overlay" | (string & {}), contribution: ReactNode): () => void;
 }
-export type MyMeterBalanceProvider = () => Promise<MyMeterBalanceDto | BalanceSnapshot>;
+export type MyMeterBalanceProvider = (options?: {
+    forceRefresh?: boolean;
+}) => Promise<MyMeterBalanceDto | BalanceSnapshot>;
 export interface MyMeterProviderDescriptor {
     id: string;
     name: string;
@@ -75,8 +77,10 @@ export interface MyMeterHostRemoteContribution extends MyMeterRemote {
     getSessionDetail(sessionId: string): Promise<RemoteSessionDetail | null>;
     getSessionCostTree(): Promise<RemoteSessionCostTree>;
     getCostAnalytics(): Promise<RemoteCostAnalyticsReport>;
+    getUsageOverview(query: RemoteUsageOverviewQuery): Promise<RemoteUsageOverviewReport>;
     exportLedger(format: RemoteLedgerExportFormat): Promise<string>;
     getBalance(): Promise<MyMeterRemoteSnapshot["balance"]>;
+    refreshBalance(): Promise<MyMeterRemoteSnapshot["balance"]>;
     getSettings(): Promise<Record<string, unknown>>;
     refreshExchangeRate(): Promise<RemoteExchangeRateSnapshot>;
 }
@@ -91,7 +95,7 @@ export interface MyMeterHostRuntime {
 export interface MyMeterClientPlugin {
     uninstall(): void;
 }
-export declare function createMyMeterHostRuntime({ dsh, balance, providers, contextBreakdown, repository: configuredRepository, exchangeRate: configuredExchangeRate, afterLedgerCommit, onAfterLedgerCommitError, }: MyMeterHostRuntimeOptions): MyMeterHostRuntime;
+export declare function createMyMeterHostRuntime({ dsh, balance, providers, contextBreakdown, repository: configuredRepository, exchangeRate: configuredExchangeRate, now: configuredNow, afterLedgerCommit, onAfterLedgerCommitError, }: MyMeterHostRuntimeOptions): MyMeterHostRuntime;
 export declare function createMyMeterClientPlugin({ slots, remote, storage, storageKey, }: MyMeterClientPluginOptions): MyMeterClientPlugin;
 export { apply, apply as applyCordisHost, createMyMeterCordisHostRuntime, inject, name, } from "./cordis-host";
 export type { MyMeterCordisHostConfig, MyMeterCordisHostOptions, MyMeterTypertHostContext } from "./cordis-host";

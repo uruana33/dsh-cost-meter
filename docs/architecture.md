@@ -65,8 +65,8 @@ flowchart LR
 | 包 | 主要职责 | 关键入口 |
 | --- | --- | --- |
 | `packages/shared` | wire 类型、金额/Token 基础类型、mock fixture、通用聚合桶 | `src/index.ts` |
-| `packages/core` | 价格目录、provider billing registry、Token 规范化、费用计算、`CostEvent` journal、预算/缓存节省、峰谷倒计时、analytics 和远程价格更新策略 | `src/index.ts`, `src/pricing/*`, `src/analytics.ts` |
-| `packages/host` | Host 输入适配、JSON/append 账本、增量提交、原子写、聚合/read model、余额、checkpoint、导出和远程价格下载库 | `src/index.ts`, `src/ledger-format.ts`, `src/balance.ts` |
+| `packages/core` | 价格目录、provider billing registry、Token 规范化、费用计算、`CostEvent` journal、预算/缓存节省、峰谷倒计时、analytics、用量概览和远程价格更新策略 | `src/index.ts`, `src/pricing/*`, `src/analytics.ts`, `src/usage-overview.ts` |
+| `packages/host` | Host 输入适配、JSON/append 账本、增量提交、原子写、聚合/read model、余额、用量概览、checkpoint、导出和远程价格下载库 | `src/index.ts`, `src/ledger-format.ts`, `src/balance.ts`, `src/usage-overview.ts` |
 | `packages/client` | Remote snapshot 类型、浏览器 store、设置持久化、view model、费用洞察和 React 组件/按需分析面板 | `src/store.ts`, `src/view-model.ts`, `src/components.tsx` |
 | `packages/plugin` | 发布包入口，连接 dsh Cordis Host/Client、历史回填、费用树、Typert Remote、自更新 RPC 和打包产物 | `src/cordis-host.ts`, `src/cordis-client.tsx`, `src/index.tsx`, `src/typert-remote.ts` |
 | `packages/api` | 早期 Remote facade 与脱敏工具；当前生产插件主要经 `packages/plugin/src/typert-remote.ts` 暴露服务 | `src/index.ts` |
@@ -255,8 +255,10 @@ checkpoint 保存 `sourceKey`、`projectionVersion`、账本 content fingerprint
 - `getSessionDetail(sessionId)`
 - `getSessionCostTree()`
 - `getCostAnalytics()`
+- `getUsageOverview({ range: "today" | "7d" | "30d", timeZone? })`
 - `exportLedger(format)`（`json` 或 `csv`）
 - `getBalance()`
+- `refreshBalance()`
 - `getSettings()`
 - `refreshExchangeRate()`
 
@@ -264,11 +266,11 @@ Host 暴露的是聚合后的 `MyMeterRemoteSnapshot`、session summary/detail�
 
 `packages/api/src/index.ts` 仍保留通用 `createClientSafeEvent` / `stripSensitiveFields`，会递归移除 `apiKey`、`authorization`、`prompt`、`completion`、`messages`、`input`、`output`、`content`、`requestBody`、`responseBody`、`accessToken` 以及以 token/API key 结尾的字段。当前生产 Host remote 已经在源头构造安全 DTO，不依赖把原始 session event 直接传给 Client。
 
-费用树、趋势/异常报告和导出均按需计算，不塞入默认 `getSnapshot()`，以控制轮询 payload。Typert adapter 的 schema parser 会拒绝不合法字段类型或枚举值，失败时 Client adapter 把连接状态降级为 `stale` 并继续显示最近 snapshot。旧 Client 不支持按需方法时，adapter 仍可使用基本 snapshot、会话列表和详情能力。
+费用树、用量概览、趋势/异常报告和导出均按需计算，不塞入默认 `getSnapshot()`，以控制轮询 payload。用量概览只按上海自然日聚合今日/7 天/30 天：今日固定 24 个小时桶，其余范围按天补零；金额只累计已知价格事件，coverage 为 `complete`、`partial` 或 `unavailable`，未知价格在 UI 显示 `—`。Typert adapter 的 schema parser 会拒绝不合法字段类型、时间戳、桶数量或枚举值，失败时 Client adapter 保留同范围最近结果并标记错误。旧 Client 不支持按需方法时，adapter 仍可使用基本 snapshot、会话列表和详情能力。
 
 ## Client Store 与轮询
 
-Client adapter `createMyMeterRemoteFromTypert` 启动时先 `getSnapshot()`，随后默认每 200ms 轮询 Host snapshot。这一频率是为了在 provider final usage 到达前展示输出增量估算。每次 snapshot 更新会通知 store 订阅者，并异步刷新余额。
+Client adapter `createMyMeterRemoteFromTypert` 启动时先 `getSnapshot()`，随后默认每 200ms 轮询轻量 Host snapshot。这一频率是为了在 provider final usage 到达前展示输出增量估算。余额请求与快照轮询解耦：首次快照后请求一次，之后默认每 5 分钟、页面恢复可见或用户手动点击“刷新余额”时更新；余额请求自带 10 秒超时、并发去重和失败退避，失败时保留 `stale` 或 `unavailable` 状态。
 
 `createMyMeterStore` 负责：
 
@@ -290,8 +292,10 @@ DeepSeek 余额实现位于 `packages/host/src/balance.ts`：
 - base URL 默认继承 `llm-deepseek.baseURL`、`DEEPSEEK_BASE_URL` 或 `https://api.deepseek.com`。
 - 请求路径是 `/user/balance`，Header 使用 `Authorization: Bearer <key>`。
 - 余额缓存默认 5 分钟；凭据或设置更新会清空缓存。
+- 请求默认 10 秒超时；并发请求共享一个 inflight 请求，失败按 `30s / 60s / 5min` 退避，避免网络故障时重复打满余额接口。
 - 可用响应转换成 micro-CNY 数字，优先选择 `balance_infos` 中 currency 为 CNY 的条目，否则用第一条。
 - 请求失败且有缓存时返回 `stale`，无缓存时返回 `unavailable`。
+- `refreshBalance()` 显式绕过余额 TTL，用于全局用量页的手动刷新；它不改变 200ms 快照轮询频率。
 
 Provider balance 列表来自 dsh `llm.listProviders()` 和 `llm.listConfigurableProviders()`。当前只有 `settingsNs === "llm-deepseek"` 的 provider 标记为 `balanceSupported: true`，客户端余额区域会隐藏其他 provider，不会复用 DeepSeek 余额。
 

@@ -34,6 +34,7 @@ import {
   ShellOverlay,
   createMockRemote,
   createMyMeterStore,
+  type MyMeterStore,
   type MyMeterRemote,
   type MyMeterRemoteSnapshot,
 } from "../../packages/client/src";
@@ -1248,10 +1249,12 @@ test("Typert Remote descriptor is strict and rejects malformed snapshots", () =>
     "listSessions",
     "getSessionDetail",
     "getBalance",
+    "refreshBalance",
     "getSettings",
     "refreshExchangeRate",
     "getSessionCostTree",
     "getCostAnalytics",
+    "getUsageOverview",
     "exportLedger",
   ]);
   expect(MYMETER_REMOTE_CONTRIBUTION.descriptors.every((descriptor) => descriptor.result.mode === "strict")).toBe(true);
@@ -1487,9 +1490,10 @@ test("client Cordis apply mounts Typert Remote, contributes overlay, settings, a
   const overlayElement = overlay?.({ useSessions });
   expect(isValidElement(overlayElement)).toBe(true);
   const overlayProps = (overlayElement as {
-    props?: { useSessions?: unknown; onOpenTokenBilling?: () => void };
+    props?: { store?: MyMeterStore; useSessions?: unknown; onOpenTokenBilling?: () => void };
   }).props;
   expect(overlayProps?.useSessions).toBe(useSessions);
+  expect(overlayProps?.store?.getState().ui.activePanel).toBe("compact");
 
   const tokenBillingTab = document.createElement("button");
   tokenBillingTab.setAttribute("role", "tab");
@@ -1499,6 +1503,8 @@ test("client Cordis apply mounts Typert Remote, contributes overlay, settings, a
   document.body.append(tokenBillingTab);
   overlayProps?.onOpenTokenBilling?.();
   expect(openTab).toHaveBeenCalledTimes(1);
+  await Promise.resolve();
+  expect(overlayProps?.store?.getState().ui.activePanel).toBe("compact");
   tokenBillingTab.remove();
 
   const conversationView = slots.contributions.get("conversation.view:mymeter") as

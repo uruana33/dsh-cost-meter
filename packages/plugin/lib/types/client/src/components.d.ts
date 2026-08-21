@@ -5,8 +5,9 @@ export declare function CompactMeter({ store, onOpenTokenBilling, }: {
     store: MyMeterStore;
     onOpenTokenBilling?: () => void;
 }): import("react").JSX.Element;
-export declare function GlobalSessionList({ store }: {
+export declare function GlobalSessionList({ store, showViewTabs, }: {
     store: MyMeterStore;
+    showViewTabs?: boolean | undefined;
 }): import("react").JSX.Element;
 export declare function SessionDetailPanel({ store, showNavigation }: {
     store: MyMeterStore;

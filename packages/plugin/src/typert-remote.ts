@@ -11,6 +11,8 @@ import type {
   RemoteSessionCostTreeNode,
   RemoteSessionDetail,
   RemoteSessionSummary,
+  RemoteUsageOverviewQuery,
+  RemoteUsageOverviewReport,
 } from "../../client/src/index";
 import type { RemoteSessionStage } from "../../client/src/store";
 
@@ -66,8 +68,10 @@ export interface MyMeterTypertRemoteNamespace {
   getSessionDetail(sessionId: string): Promise<RemoteResult<RemoteSessionDetail | null>>;
   getSessionCostTree?(): Promise<RemoteResult<RemoteSessionCostTree>>;
   getCostAnalytics?(): Promise<RemoteResult<RemoteCostAnalyticsReport>>;
+  getUsageOverview?(query: RemoteUsageOverviewQuery): Promise<RemoteResult<RemoteUsageOverviewReport>>;
   exportLedger?(format: RemoteLedgerExportFormat): Promise<RemoteResult<string>>;
   getBalance(): Promise<RemoteResult<MyMeterRemoteSnapshot["balance"]>>;
+  refreshBalance?(): Promise<RemoteResult<MyMeterRemoteSnapshot["balance"]>>;
   getSettings(): Promise<RemoteResult<Record<string, unknown>>>;
   refreshExchangeRate?(): Promise<RemoteResult<RemoteExchangeRateSnapshot>>;
 }
@@ -81,12 +85,15 @@ export interface MyMeterTypertRemoteAdapter extends MyMeterRemote {
   refresh(): Promise<void>;
   getSessionCostTree(): Promise<RemoteSessionCostTree>;
   getCostAnalytics(): Promise<RemoteCostAnalyticsReport>;
+  getUsageOverview(query: RemoteUsageOverviewQuery): Promise<RemoteUsageOverviewReport>;
   exportLedger(format: RemoteLedgerExportFormat): Promise<string>;
+  refreshBalance(): Promise<MyMeterRemoteSnapshot["balance"]>;
   dispose(): void;
 }
 
 export interface MyMeterTypertRemoteAdapterOptions {
   pollIntervalMs?: number;
+  balancePollIntervalMs?: number;
 }
 
 export const MYMETER_SERVICE_KEY = "mymeter";
@@ -120,6 +127,8 @@ const settingsSchema = schema<Record<string, unknown>>("RemoteSettings", (value)
 const exchangeRateSchema = schema<RemoteExchangeRateSnapshot>("RemoteExchangeRateSnapshot", parseExchangeRate);
 const sessionCostTreeSchema = schema<RemoteSessionCostTree>("RemoteSessionCostTree", parseSessionCostTree);
 const costAnalyticsSchema = schema<RemoteCostAnalyticsReport>("RemoteCostAnalyticsReport", parseCostAnalyticsReport);
+const usageOverviewQuerySchema = schema<RemoteUsageOverviewQuery>("RemoteUsageOverviewQuery", parseUsageOverviewQuery);
+const usageOverviewSchema = schema<RemoteUsageOverviewReport>("RemoteUsageOverviewReport", parseUsageOverviewReport);
 
 const getSnapshotDescriptor = descriptor("getSnapshot", [], snapshotSchema);
 const listSessionsDescriptor = descriptor("listSessions", [], sessionsSchema);
@@ -129,10 +138,16 @@ const getSessionDetailDescriptor = descriptor(
   sessionDetailOrNullSchema,
 );
 const getBalanceDescriptor = descriptor("getBalance", [], balanceSchema);
+const refreshBalanceDescriptor = descriptor("refreshBalance", [], balanceSchema);
 const getSettingsDescriptor = descriptor("getSettings", [], settingsSchema);
 const refreshExchangeRateDescriptor = descriptor("refreshExchangeRate", [], exchangeRateSchema);
 const getSessionCostTreeDescriptor = descriptor("getSessionCostTree", [], sessionCostTreeSchema);
 const getCostAnalyticsDescriptor = descriptor("getCostAnalytics", [], costAnalyticsSchema);
+const getUsageOverviewDescriptor = descriptor(
+  "getUsageOverview",
+  [{ name: "query", wire: "query", source: "json", codec: codec("RemoteUsageOverviewQuery", usageOverviewQuerySchema) }],
+  usageOverviewSchema,
+);
 const exportLedgerDescriptor = descriptor(
   "exportLedger",
   [{ name: "format", wire: "format", source: "json", codec: codec("LedgerExportFormat", ledgerExportFormatSchema) }],
@@ -144,10 +159,12 @@ export const MYMETER_REMOTE_DESCRIPTORS: readonly InvocationDescriptor[] = [
   listSessionsDescriptor,
   getSessionDetailDescriptor,
   getBalanceDescriptor,
+  refreshBalanceDescriptor,
   getSettingsDescriptor,
   refreshExchangeRateDescriptor,
   getSessionCostTreeDescriptor,
   getCostAnalyticsDescriptor,
+  getUsageOverviewDescriptor,
   exportLedgerDescriptor,
 ];
 
@@ -168,6 +185,8 @@ export const MYMETER_LOCAL_TYPERT_CONTRIBUTION: TypertLocalContribution = Object
     { name: "RemoteExchangeRateSnapshot", schema: exchangeRateSchema },
     { name: "RemoteSessionCostTree", schema: sessionCostTreeSchema },
     { name: "RemoteCostAnalyticsReport", schema: costAnalyticsSchema },
+    { name: "RemoteUsageOverviewQuery", schema: usageOverviewQuerySchema },
+    { name: "RemoteUsageOverviewReport", schema: usageOverviewSchema },
     { name: "LedgerExportFormat", schema: ledgerExportFormatSchema },
   ],
   model: {
@@ -210,9 +229,11 @@ export async function createMyMeterRemoteFromTypert(
   let disposed = false;
   let refreshing = false;
   let refreshingBalance = false;
+  let initialBalanceRequested = false;
   // DeepSeek usage lands only at stream completion. Poll frequently enough
   // to expose the output-delta estimates before final settlement replaces them.
   const pollIntervalMs = options.pollIntervalMs ?? 200;
+  const balancePollIntervalMs = options.balancePollIntervalMs ?? 5 * 60_000;
 
   async function refresh(): Promise<void> {
     if (disposed || refreshing) return;
@@ -232,28 +253,35 @@ export async function createMyMeterRemoteFromTypert(
     }
     if (disposed) return;
     for (const listener of listeners) listener(snapshot);
-    void refreshBalance();
+    if (!initialBalanceRequested) {
+      initialBalanceRequested = true;
+      void updateBalance().then((balance) => {
+        if (!balance || disposed) return;
+        for (const listener of listeners) listener(snapshot);
+      });
+    }
   }
 
-  async function refreshBalance(): Promise<void> {
-    if (disposed || refreshingBalance) return;
+  async function updateBalance(force = false): Promise<MyMeterRemoteSnapshot["balance"] | null> {
+    if (disposed || refreshingBalance) return null;
     refreshingBalance = true;
     try {
-      const result = await namespace.getBalance();
-      if (!result.ok || disposed) return;
+      const result = force && namespace.refreshBalance
+        ? await namespace.refreshBalance()
+        : await namespace.getBalance();
+      if (!result.ok || disposed) return null;
       const balance = balanceSchema.parse(result.value);
       snapshot = {
         ...snapshot,
         balance,
         balances: refreshSupportedBalances(snapshot.balances, balance),
       };
+      return balance;
     } catch {
-      return;
+      return null;
     } finally {
       refreshingBalance = false;
     }
-    if (disposed) return;
-    for (const listener of listeners) listener(snapshot);
   }
 
   const interval = pollIntervalMs > 0
@@ -264,10 +292,35 @@ export async function createMyMeterRemoteFromTypert(
 
   if (interval?.unref) interval.unref();
 
+  const balanceInterval = balancePollIntervalMs > 0
+    ? setInterval(() => {
+      void updateBalance().then((balance) => {
+        if (!balance || disposed) return;
+        for (const listener of listeners) listener(snapshot);
+      });
+    }, balancePollIntervalMs)
+    : null;
+  if (balanceInterval?.unref) balanceInterval.unref();
+
+  const handleVisibilityChange = (): void => {
+    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+      void updateBalance().then((balance) => {
+        if (!balance || disposed) return;
+        for (const listener of listeners) listener(snapshot);
+      });
+    }
+  };
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+  }
   function dispose(): void {
     if (disposed) return;
     disposed = true;
     if (interval) clearInterval(interval);
+    if (balanceInterval) clearInterval(balanceInterval);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    }
     listeners.clear();
   }
 
@@ -283,6 +336,12 @@ export async function createMyMeterRemoteFromTypert(
       };
     },
     refresh,
+    async refreshBalance() {
+      const balance = await updateBalance(true);
+      if (!balance) return snapshot.balance;
+      for (const listener of listeners) listener(snapshot);
+      return balance;
+    },
     async refreshExchangeRate() {
       if (!namespace.refreshExchangeRate) return;
       const result = await namespace.refreshExchangeRate();
@@ -305,6 +364,15 @@ export async function createMyMeterRemoteFromTypert(
       const result = await namespace.getCostAnalytics();
       if (!result.ok) throw new Error(`mymeter: getCostAnalytics failed: ${result.error.message}`);
       return costAnalyticsSchema.parse(result.value);
+    },
+    async getUsageOverview(query) {
+      if (!namespace.getUsageOverview) {
+        throw new Error("mymeter: getUsageOverview failed: method unavailable");
+      }
+      const parsedQuery = usageOverviewQuerySchema.parse(query);
+      const result = await namespace.getUsageOverview(parsedQuery);
+      if (!result.ok) throw new Error(`mymeter: getUsageOverview failed: ${result.error.message}`);
+      return usageOverviewSchema.parse(result.value);
     },
     async exportLedger(format) {
       if (!namespace.exportLedger) {
@@ -390,6 +458,9 @@ function parseSnapshot(value: unknown): MyMeterRemoteSnapshot {
     sessions,
     details,
     ...(record.exchangeRate === undefined ? {} : { exchangeRate: parseExchangeRate(record.exchangeRate) }),
+    ...(record.ledgerGeneration === undefined
+      ? {}
+      : { ledgerGeneration: nonNegativeInteger(record.ledgerGeneration, "ledgerGeneration") }),
   };
 }
 
@@ -492,6 +563,89 @@ function parseCostAnalyticsReport(value: unknown): RemoteCostAnalyticsReport {
       parseAnalyticsTrendBucket(item, "costAnalytics.hourlyTrend")
     ),
     anomalies: array(record.anomalies, "costAnalytics.anomalies").map(parseAnalyticsAnomaly),
+  };
+}
+
+function parseUsageOverviewQuery(value: unknown): RemoteUsageOverviewQuery {
+  const record = object(value, "usageOverviewQuery");
+  const range = oneOf(record.range, ["today", "7d", "30d"], "usageOverviewQuery.range");
+  if (record.timeZone === undefined) return { range };
+  const timeZone = boundedString(record.timeZone, "usageOverviewQuery.timeZone", 100);
+  try {
+    new Intl.DateTimeFormat("en", { timeZone }).format(0);
+  } catch {
+    throw new Error("usageOverviewQuery.timeZone: expected valid IANA time zone");
+  }
+  return { range, timeZone };
+}
+
+function parseUsageOverviewReport(value: unknown): RemoteUsageOverviewReport {
+  const record = object(value, "usageOverview");
+  const range = oneOf(record.range, ["today", "7d", "30d"], "usageOverview.range");
+  const expectedBuckets = range === "today" ? 24 : range === "7d" ? 7 : 30;
+  const trend = array(record.trend, "usageOverview.trend");
+  const topModels = array(record.topModels, "usageOverview.topModels");
+  if (trend.length !== expectedBuckets) {
+    throw new Error(`usageOverview.trend: expected ${expectedBuckets} buckets`);
+  }
+  if (topModels.length > 10) throw new Error("usageOverview.topModels: expected at most 10 models");
+  const timeZone = parseTimeZone(record.timeZone, "usageOverview.timeZone");
+  return {
+    range,
+    timeZone,
+    generatedAt: timestamp(record.generatedAt, "usageOverview.generatedAt"),
+    startAt: timestamp(record.startAt, "usageOverview.startAt"),
+    endAt: timestamp(record.endAt, "usageOverview.endAt"),
+    totals: parseUsageOverviewTotal(record.totals, "usageOverview.totals"),
+    trend: trend.map((item, index) => {
+      const bucket = object(item, `usageOverview.trend[${index}]`);
+      return {
+        key: boundedString(bucket.key, `usageOverview.trend[${index}].key`, 32),
+        startAt: timestamp(bucket.startAt, `usageOverview.trend[${index}].startAt`),
+        endAt: timestamp(bucket.endAt, `usageOverview.trend[${index}].endAt`),
+        ...parseUsageOverviewTotal(bucket, `usageOverview.trend[${index}]`),
+        models: bucket.models === undefined
+          ? []
+          : parseUsageOverviewModels(bucket.models, `usageOverview.trend[${index}].models`),
+      };
+    }),
+    topModels: topModels.map((item, index) => {
+      const model = object(item, `usageOverview.topModels[${index}]`);
+      return {
+        provider: boundedString(model.provider, `usageOverview.topModels[${index}].provider`, 120),
+        model: boundedString(model.model, `usageOverview.topModels[${index}].model`, 240),
+        ...parseUsageOverviewTotal(model, `usageOverview.topModels[${index}]`),
+      };
+    }),
+  };
+}
+
+function parseUsageOverviewModels(value: unknown, field: string): RemoteUsageOverviewReport["trend"][number]["models"] {
+  return array(value, field).map((item, index) => {
+    const model = object(item, `${field}[${index}]`);
+    return {
+      provider: boundedString(model.provider, `${field}[${index}].provider`, 120),
+      model: boundedString(model.model, `${field}[${index}].model`, 240),
+      ...parseUsageOverviewTotal(model, `${field}[${index}]`),
+    };
+  });
+}
+
+function parseUsageOverviewTotal(value: unknown, field: string): RemoteUsageOverviewReport["totals"] {
+  const record = object(value, field);
+  const requestCount = nonNegativeInteger(record.requestCount, `${field}.requestCount`);
+  const pricedRequestCount = nonNegativeInteger(record.pricedRequestCount, `${field}.pricedRequestCount`);
+  const unknownRequestCount = nonNegativeInteger(record.unknownRequestCount, `${field}.unknownRequestCount`);
+  if (pricedRequestCount + unknownRequestCount !== requestCount) {
+    throw new Error(`${field}: request coverage counts do not add up`);
+  }
+  return {
+    amountMicroCny: nonNegativeInteger(record.amountMicroCny, `${field}.amountMicroCny`),
+    totalTokens: nonNegativeInteger(record.totalTokens, `${field}.totalTokens`),
+    requestCount,
+    pricedRequestCount,
+    unknownRequestCount,
+    coverage: oneOf(record.coverage, ["complete", "partial", "unavailable"], `${field}.coverage`),
   };
 }
 
@@ -842,6 +996,28 @@ function nonEmptyString(value: unknown, field: string): string {
   return parsed;
 }
 
+function boundedString(value: unknown, field: string, maximumLength: number): string {
+  const parsed = nonEmptyString(value, field);
+  if (parsed.length > maximumLength) throw new Error(`${field}: string is too long`);
+  return parsed;
+}
+
+function parseTimeZone(value: unknown, field: string): string {
+  const timeZone = boundedString(value, field, 100);
+  try {
+    new Intl.DateTimeFormat("en", { timeZone }).format(0);
+  } catch {
+    throw new Error(`${field}: expected valid IANA time zone`);
+  }
+  return timeZone;
+}
+
+function timestamp(value: unknown, field: string): string {
+  const parsed = boundedString(value, field, 64);
+  if (!Number.isFinite(Date.parse(parsed))) throw new Error(`${field}: expected timestamp`);
+  return parsed;
+}
+
 function nullableString(value: unknown, field: string): string | null {
   if (value === null) return null;
   return requiredString(value, field);
@@ -873,6 +1049,12 @@ function nonNegativeNumber(value: unknown, field: string): number {
 function positiveInteger(value: unknown, field: string): number {
   const number = finiteNumber(value, field);
   if (!Number.isInteger(number) || number <= 0) throw new Error(`${field}: expected positive integer`);
+  return number;
+}
+
+function nonNegativeInteger(value: unknown, field: string): number {
+  const number = nonNegativeNumber(value, field);
+  if (!Number.isSafeInteger(number)) throw new Error(`${field}: expected safe integer`);
   return number;
 }
 

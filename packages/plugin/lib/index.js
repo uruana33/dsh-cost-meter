@@ -1026,6 +1026,249 @@ function formatRatio(value) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
+// packages/core/src/usage-overview.ts
+var DEFAULT_TIME_ZONE = "Asia/Shanghai";
+var KNOWN_COST_STATUSES = /* @__PURE__ */ new Set(["estimated", "settled", "failed"]);
+function createUsageOverview(events, options = { range: "today" }) {
+  const range = normalizeRange(options.range);
+  const timeZone = normalizeTimeZone(options.timeZone);
+  const now = resolveNow(options.now);
+  const today = localDayKey(now, timeZone);
+  const dayCount = range === "today" ? 1 : range === "7d" ? 7 : 30;
+  const dayKeys = createDayKeys(today, dayCount);
+  const allowedDays = new Set(dayKeys);
+  const bucketKeys = range === "today" ? Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, "0")) : dayKeys;
+  const buckets = new Map(bucketKeys.map((key) => [key, emptyMutableTotal()]));
+  const bucketModels = /* @__PURE__ */ new Map();
+  const totals = emptyMutableTotal();
+  const models = /* @__PURE__ */ new Map();
+  for (const input of events) {
+    const event = normalizeEvent(input);
+    if (!event) continue;
+    const parts = partsAt(event.at, timeZone);
+    const dayKey = dateKey(parts.year, parts.month, parts.day);
+    if (!allowedDays.has(dayKey)) continue;
+    const bucketKey = range === "today" ? String(parts.hour).padStart(2, "0") : dayKey;
+    const bucket = buckets.get(bucketKey);
+    if (!bucket) continue;
+    addEvent(bucket, event);
+    addEvent(totals, event);
+    const modelsForBucket = bucketModels.get(bucketKey) ?? /* @__PURE__ */ new Map();
+    const bucketModelKey = `${event.provider}\0${event.model}`;
+    const bucketModel = modelsForBucket.get(bucketModelKey) ?? {
+      provider: event.provider,
+      model: event.model,
+      ...emptyMutableTotal()
+    };
+    addEvent(bucketModel, event);
+    modelsForBucket.set(bucketModelKey, bucketModel);
+    bucketModels.set(bucketKey, modelsForBucket);
+    const modelKey = `${event.provider}\0${event.model}`;
+    const model = models.get(modelKey) ?? {
+      provider: event.provider,
+      model: event.model,
+      ...emptyMutableTotal()
+    };
+    addEvent(model, event);
+    models.set(modelKey, model);
+  }
+  const trend = bucketKeys.map((key) => {
+    const total = toTotal2(buckets.get(key) ?? emptyMutableTotal());
+    const bounds = range === "today" ? hourBounds(today, Number(key), timeZone) : dayBounds(key, timeZone);
+    return {
+      key,
+      ...bounds,
+      ...total,
+      models: sortModelSummaries(bucketModels.get(key))
+    };
+  });
+  const rangeStart = dayBounds(dayKeys[0], timeZone).startAt;
+  const rangeEnd = dayBounds(nextDayKey(dayKeys.at(-1)), timeZone).startAt;
+  const topModelLimit = positiveInteger2(options.topModelLimit, 10, 10);
+  const topModels = [...models.values()].map((model) => ({
+    provider: model.provider,
+    model: model.model,
+    ...toTotal2(model)
+  })).sort(
+    (left, right) => right.amountMicroCny - left.amountMicroCny || right.totalTokens - left.totalTokens || left.model.localeCompare(right.model) || left.provider.localeCompare(right.provider)
+  ).slice(0, topModelLimit);
+  return {
+    range,
+    timeZone,
+    generatedAt: now.toISOString(),
+    startAt: rangeStart,
+    endAt: rangeEnd,
+    totals: toTotal2(totals),
+    trend,
+    topModels
+  };
+}
+function sortModelSummaries(models) {
+  return [...models?.values() ?? []].map((model) => ({
+    provider: model.provider,
+    model: model.model,
+    ...toTotal2(model)
+  })).sort(
+    (left, right) => right.amountMicroCny - left.amountMicroCny || right.totalTokens - left.totalTokens || left.model.localeCompare(right.model) || left.provider.localeCompare(right.provider)
+  );
+}
+function normalizeEvent(input) {
+  const at = new Date(input.requestStartedAt);
+  if (!Number.isFinite(at.getTime())) return null;
+  const status = input.status ?? "unknown";
+  const validAmount = Number.isFinite(input.amountMicroCny) && (input.amountMicroCny ?? -1) >= 0;
+  const knownPrice = KNOWN_COST_STATUSES.has(status) && validAmount;
+  return {
+    at,
+    provider: normalizedText(input.provider),
+    model: normalizedText(input.model),
+    knownPrice,
+    amountMicroCny: knownPrice ? safeInteger(input.amountMicroCny) : 0,
+    totalTokens: safeSum([
+      input.cacheHitTokens,
+      input.cacheMissTokens,
+      input.cacheWriteTokens,
+      input.outputTokens
+    ])
+  };
+}
+function addEvent(total, event) {
+  total.requestCount = safeAdd(total.requestCount, 1);
+  total.totalTokens = safeAdd(total.totalTokens, event.totalTokens);
+  if (event.knownPrice) {
+    total.pricedRequestCount = safeAdd(total.pricedRequestCount, 1);
+    total.amountMicroCny = safeAdd(total.amountMicroCny, event.amountMicroCny);
+  } else {
+    total.unknownRequestCount = safeAdd(total.unknownRequestCount, 1);
+  }
+}
+function emptyMutableTotal() {
+  return {
+    amountMicroCny: 0,
+    totalTokens: 0,
+    requestCount: 0,
+    pricedRequestCount: 0,
+    unknownRequestCount: 0
+  };
+}
+function toTotal2(total) {
+  return {
+    amountMicroCny: total.amountMicroCny,
+    totalTokens: total.totalTokens,
+    requestCount: total.requestCount,
+    pricedRequestCount: total.pricedRequestCount,
+    unknownRequestCount: total.unknownRequestCount,
+    coverage: coverage(total)
+  };
+}
+function coverage(total) {
+  if (total.requestCount === 0 || total.pricedRequestCount === 0) return "unavailable";
+  if (total.unknownRequestCount > 0) return "partial";
+  return "complete";
+}
+function resolveNow(value) {
+  const resolved = typeof value === "function" ? value() : value;
+  const date = resolved instanceof Date ? new Date(resolved.getTime()) : new Date(resolved ?? Date.now());
+  return Number.isFinite(date.getTime()) ? date : /* @__PURE__ */ new Date();
+}
+function normalizeRange(value) {
+  return value === "7d" || value === "30d" ? value : "today";
+}
+function normalizeTimeZone(value) {
+  const candidate = value?.trim() || DEFAULT_TIME_ZONE;
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: candidate }).format(0);
+    return candidate;
+  } catch {
+    return DEFAULT_TIME_ZONE;
+  }
+}
+function partsAt(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    year: Number(values.year),
+    month: Number(values.month),
+    day: Number(values.day),
+    hour: Number(values.hour),
+    minute: Number(values.minute),
+    second: Number(values.second)
+  };
+}
+function localDayKey(date, timeZone) {
+  const parts = partsAt(date, timeZone);
+  return dateKey(parts.year, parts.month, parts.day);
+}
+function dateKey(year, month, day) {
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+function createDayKeys(lastDay, count) {
+  const [year, month, day] = lastDay.split("-").map(Number);
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(Date.UTC(year, month - 1, day - (count - index - 1)));
+    return dateKey(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+  });
+}
+function nextDayKey(key) {
+  const [year, month, day] = key.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + 1));
+  return dateKey(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+}
+function dayBounds(key, timeZone) {
+  const [year, month, day] = key.split("-").map(Number);
+  return {
+    startAt: zonedDateTimeToUtc(year, month, day, 0, timeZone).toISOString(),
+    endAt: zonedDateTimeToUtc(...datePartsFromKey(nextDayKey(key)), 0, timeZone).toISOString()
+  };
+}
+function hourBounds(key, hour, timeZone) {
+  const [year, month, day] = datePartsFromKey(key);
+  const startAt = zonedDateTimeToUtc(year, month, day, hour, timeZone);
+  const endAt = hour === 23 ? zonedDateTimeToUtc(...datePartsFromKey(nextDayKey(key)), 0, timeZone) : zonedDateTimeToUtc(year, month, day, hour + 1, timeZone);
+  return { startAt: startAt.toISOString(), endAt: endAt.toISOString() };
+}
+function datePartsFromKey(key) {
+  return key.split("-").map(Number);
+}
+function zonedDateTimeToUtc(year, month, day, hour, timeZone) {
+  const desired = Date.UTC(year, month - 1, day, hour, 0, 0);
+  let guess = desired;
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    const actual = partsAt(new Date(guess), timeZone);
+    const comparable = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, actual.second);
+    const difference = desired - comparable;
+    if (difference === 0) break;
+    guess += difference;
+  }
+  return new Date(guess);
+}
+function normalizedText(value) {
+  return value?.trim() || "unknown";
+}
+function safeInteger(value) {
+  if (!Number.isFinite(value) || (value ?? -1) < 0) return 0;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.round(value));
+}
+function safeSum(values) {
+  return values.reduce((sum, value) => safeAdd(sum, safeInteger(value)), 0);
+}
+function safeAdd(left, right) {
+  return Math.min(Number.MAX_SAFE_INTEGER, left + right);
+}
+function positiveInteger2(value, fallback, maximum) {
+  if (!Number.isFinite(value) || (value ?? 0) <= 0) return fallback;
+  return Math.min(maximum, Math.max(1, Math.round(value)));
+}
+
 // packages/core/src/index.ts
 function createDeepSeekPriceDirectory(options = {}) {
   const priceVersion = options.priceVersion ?? DEEPSEEK_PRICE_VERSION;
@@ -2079,11 +2322,11 @@ function finalizeSummary(summary) {
   }
   return summary;
 }
-function dayKeyFromTimestamp(timestamp) {
-  if (timestamp.length >= 10) {
-    return timestamp.slice(0, 10);
+function dayKeyFromTimestamp(timestamp2) {
+  if (timestamp2.length >= 10) {
+    return timestamp2.slice(0, 10);
   }
-  const parsed = new Date(timestamp);
+  const parsed = new Date(timestamp2);
   if (!Number.isNaN(parsed.getTime())) {
     return parsed.toISOString().slice(0, 10);
   }
@@ -2728,6 +2971,25 @@ function toAnalyticsEvent(event) {
     amountMicroCny: event.amountMicroCny,
     status: event.status,
     pricingZone: event.pricingZone
+  };
+}
+
+// packages/host/src/usage-overview.ts
+function createHostUsageOverview(source, options = { range: "today" }) {
+  const events = Array.isArray(source) ? createInMemoryCostEventRepository(source).list() : source.list();
+  return createUsageOverview(events.map(toUsageOverviewEvent), options);
+}
+function toUsageOverviewEvent(event) {
+  return {
+    requestStartedAt: event.requestStartedAt,
+    provider: event.provider,
+    model: event.model,
+    status: event.status,
+    amountMicroCny: event.amountMicroCny,
+    cacheHitTokens: event.cacheHitTokens,
+    cacheMissTokens: event.cacheMissTokens,
+    cacheWriteTokens: event.cacheWriteTokens,
+    outputTokens: event.outputTokens
   };
 }
 
@@ -3799,19 +4061,34 @@ function createDeepSeekBalanceService({
   resolveApiKey,
   fetchImpl = fetch,
   now = () => Date.now(),
-  cacheTtlMs = 5 * 6e4
+  cacheTtlMs = 5 * 6e4,
+  requestTimeoutMs = 1e4,
+  failureBackoffMs = [3e4, 6e4, 5 * 6e4]
 }) {
   let cache = null;
+  let inflight = null;
+  let failureCount = 0;
+  let nextRetryAt = 0;
+  let lastFailure = null;
+  const backoffSchedule = normalizeBackoffSchedule(failureBackoffMs);
   async function requestBalance() {
     const currentApiKey = resolveApiKey ? await resolveApiKey() : apiKey;
     if (!currentApiKey?.trim()) {
       throw new Error("DeepSeek API credential is not configured");
     }
-    const init = { headers: { Authorization: `Bearer ${currentApiKey}` } };
-    const response = await fetchImpl(new URL("/user/balance", baseUrl), init);
+    const controller = new AbortController();
+    const init = {
+      headers: { Authorization: `Bearer ${currentApiKey}` },
+      signal: controller.signal
+    };
+    const response = await fetchWithTimeout(
+      fetchImpl(new URL("/user/balance", baseUrl), init),
+      controller,
+      requestTimeoutMs
+    );
     if (!response.ok) {
       const status = response.status ?? "unknown";
-      throw new Error(`DeepSeek balance request failed (HTTP ${status})`);
+      throw new BalanceRequestError(`DeepSeek balance request failed (HTTP ${status})`);
     }
     const body = asRecord(await response.json());
     const balanceInfo = selectCurrencyBalance(body);
@@ -3835,8 +4112,33 @@ function createDeepSeekBalanceService({
     if (balanceInfo.currency) {
       snapshot.currency = balanceInfo.currency;
     }
-    cache = snapshot;
     return snapshot;
+  }
+  function failedSnapshot(error, currentTime) {
+    const message = publicBalanceError(error);
+    if (cache) {
+      return {
+        ...cache,
+        status: "stale",
+        isExpired: currentTime > cache.expiresAt,
+        error: message
+      };
+    }
+    return {
+      status: "unavailable",
+      isAvailable: false,
+      unit: "microCny",
+      totalMicroCny: null,
+      grantedMicroCny: null,
+      toppedUpMicroCny: null,
+      total: null,
+      granted: null,
+      toppedUp: null,
+      fetchedAt: currentTime,
+      expiresAt: currentTime,
+      isExpired: true,
+      error: message
+    };
   }
   return {
     async getSnapshot(options = {}) {
@@ -3849,38 +4151,69 @@ function createDeepSeekBalanceService({
           isExpired: cache.status === "unavailable"
         };
       }
-      try {
-        return await requestBalance();
-      } catch (error) {
-        if (cache) {
-          return {
-            ...cache,
-            status: "stale",
-            isExpired: currentTime > cache.expiresAt,
-            error: error instanceof Error ? error.message : "balance request failed"
-          };
-        }
+      if (!options.forceRefresh && currentTime < nextRetryAt && lastFailure) {
         return {
-          status: "unavailable",
-          isAvailable: false,
-          unit: "microCny",
-          totalMicroCny: null,
-          grantedMicroCny: null,
-          toppedUpMicroCny: null,
-          total: null,
-          granted: null,
-          toppedUp: null,
-          fetchedAt: currentTime,
-          expiresAt: currentTime,
-          isExpired: true,
-          error: error instanceof Error ? error.message : "balance request failed"
+          ...lastFailure,
+          isExpired: cache ? currentTime > cache.expiresAt : true
         };
       }
+      if (inflight) return inflight;
+      const request = requestBalance().then((snapshot) => {
+        cache = snapshot;
+        failureCount = 0;
+        nextRetryAt = 0;
+        lastFailure = null;
+        return snapshot;
+      }).catch((error) => {
+        const failure = failedSnapshot(error, now());
+        failureCount += 1;
+        nextRetryAt = now() + backoffSchedule[Math.min(failureCount - 1, backoffSchedule.length - 1)];
+        lastFailure = failure;
+        return failure;
+      }).finally(() => {
+        if (inflight === request) inflight = null;
+      });
+      inflight = request;
+      return request;
     },
     clearCache() {
       cache = null;
+      lastFailure = null;
+      failureCount = 0;
+      nextRetryAt = 0;
     }
   };
+}
+var BalanceRequestError = class extends Error {
+};
+var BalanceTimeoutError = class extends Error {
+};
+async function fetchWithTimeout(request, controller, timeoutMs) {
+  const safeTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1e4;
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new BalanceTimeoutError("DeepSeek balance request timed out"));
+    }, safeTimeoutMs);
+  });
+  try {
+    return await Promise.race([request, timeout]);
+  } finally {
+    if (timer !== void 0) clearTimeout(timer);
+  }
+}
+function normalizeBackoffSchedule(input) {
+  const normalized = input.filter((value) => Number.isFinite(value) && value >= 0).map((value) => Math.round(value));
+  return normalized.length > 0 ? normalized : [3e4, 6e4, 5 * 6e4];
+}
+function publicBalanceError(error) {
+  if (error instanceof BalanceTimeoutError) return "DeepSeek balance request timed out";
+  if (error instanceof BalanceRequestError) return error.message;
+  if (error instanceof Error && error.message === "DeepSeek API credential is not configured") {
+    return error.message;
+  }
+  return "DeepSeek balance request failed";
 }
 function asNullableNumber(value) {
   const parsed = asNumber(value, Number.NaN);
@@ -4007,12 +4340,48 @@ function createBillingReadModel(options = {}) {
 }
 
 // packages/client/src/components.tsx
-import { useEffect as useEffect2, useLayoutEffect, useMemo as useMemo2, useState as useState2, useSyncExternalStore as useSyncExternalStore2 } from "react";
+import { useEffect as useEffect2, useLayoutEffect, useMemo as useMemo2, useState as useState3, useSyncExternalStore as useSyncExternalStore2 } from "react";
 
-// packages/client/src/session-stages.tsx
-import { useEffect, useMemo, useState } from "react";
+// packages/client/src/analytics-chart.tsx
+import { useState } from "react";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var DSH_COLORS = {
+  primary: "var(--dsw-alias-label-primary, #111827)",
+  secondary: "var(--dsw-alias-label-secondary, #4b5563)",
+  tertiary: "var(--dsw-alias-label-tertiary, #6b7280)",
+  layer1: "var(--dsw-alias-bg-layer-1, #ffffff)",
+  layer2: "var(--dsw-alias-bg-layer-2, #f3f4f6)",
+  border1: "var(--dsw-alias-border-l1, #d1d5db)",
+  brand: "var(--dsw-alias-brand-primary, #2563eb)"
+};
+var shellStyle = {
+  display: "grid",
+  gap: 6,
+  padding: "8px 8px 6px",
+  border: `1px solid ${DSH_COLORS.border1}`,
+  borderRadius: 6,
+  background: DSH_COLORS.layer1
+};
+var emptyStyle = {
+  margin: 0,
+  padding: "16px 4px",
+  color: DSH_COLORS.tertiary,
+  fontSize: 11,
+  textAlign: "center"
+};
+var labelRowStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(42px, 1fr))",
+  gap: 4,
+  color: DSH_COLORS.secondary,
+  fontSize: 9,
+  fontVariantNumeric: "tabular-nums"
+};
+
+// packages/client/src/session-stages.tsx
+import { useEffect, useMemo, useState as useState2 } from "react";
+import { Fragment as Fragment2, jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
+var DSH_COLORS2 = {
   primary: "var(--dsw-alias-label-primary, #111827)",
   secondary: "var(--dsw-alias-label-secondary, #4b5563)",
   tertiary: "var(--dsw-alias-label-tertiary, #6b7280)",
@@ -4025,12 +4394,12 @@ var DSH_COLORS = {
 var PRICING_COLORS = {
   peak: "var(--dsw-alias-state-warn-primary, #b45309)",
   offpeak: "var(--dsw-alias-state-success-primary, #0f766e)",
-  unknown: DSH_COLORS.brand
+  unknown: DSH_COLORS2.brand
 };
 
 // packages/client/src/update-ui.tsx
 import { useSyncExternalStore } from "react";
-import { jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
+import { jsx as jsx3, jsxs as jsxs3 } from "react/jsx-runtime";
 var COLORS = {
   primary: "var(--dsw-alias-label-primary, #111827)",
   secondary: "var(--dsw-alias-label-secondary, #4b5563)",
@@ -4066,8 +4435,41 @@ var primaryButtonStyle = {
   cursor: "pointer"
 };
 
+// packages/client/src/usage-overview.tsx
+import { jsx as jsx4, jsxs as jsxs4 } from "react/jsx-runtime";
+var DSH_COLORS3 = {
+  primary: "var(--dsw-alias-label-primary, #111827)",
+  secondary: "var(--dsw-alias-label-secondary, #4b5563)",
+  layer1: "var(--dsw-alias-bg-layer-1, #ffffff)",
+  border1: "var(--dsw-alias-border-l1, #d1d5db)"
+};
+var itemStyle = {
+  minWidth: 0,
+  padding: "7px 8px",
+  border: `1px solid ${DSH_COLORS3.border1}`,
+  borderRadius: 6,
+  background: DSH_COLORS3.layer1
+};
+var labelStyle = {
+  display: "block",
+  color: DSH_COLORS3.secondary,
+  fontSize: 10,
+  fontWeight: 700
+};
+var valueStyle = {
+  display: "block",
+  marginTop: 2,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  color: DSH_COLORS3.primary,
+  fontSize: 12,
+  fontWeight: 750,
+  fontVariantNumeric: "tabular-nums",
+  whiteSpace: "nowrap"
+};
+
 // packages/client/src/components.tsx
-import { Fragment as Fragment2, jsx as jsx3, jsxs as jsxs3 } from "react/jsx-runtime";
+import { Fragment as Fragment3, jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
 
 // packages/client/src/update-controller.ts
 var MYMETER_UPDATE_RPC_ENDPOINTS = Object.freeze({
@@ -4081,7 +4483,7 @@ import {
   useLayoutEffect as useLayoutEffect2,
   useRef
 } from "react";
-import { jsx as jsx4, jsxs as jsxs4 } from "react/jsx-runtime";
+import { jsx as jsx6, jsxs as jsxs6 } from "react/jsx-runtime";
 
 // packages/plugin/src/session-cost-tree.ts
 function buildSessionCostTree({
@@ -4322,6 +4724,8 @@ var settingsSchema = schema("RemoteSettings", (value) => {
 var exchangeRateSchema = schema("RemoteExchangeRateSnapshot", parseExchangeRate);
 var sessionCostTreeSchema = schema("RemoteSessionCostTree", parseSessionCostTree);
 var costAnalyticsSchema = schema("RemoteCostAnalyticsReport", parseCostAnalyticsReport);
+var usageOverviewQuerySchema = schema("RemoteUsageOverviewQuery", parseUsageOverviewQuery);
+var usageOverviewSchema = schema("RemoteUsageOverviewReport", parseUsageOverviewReport);
 var getSnapshotDescriptor = descriptor("getSnapshot", [], snapshotSchema);
 var listSessionsDescriptor = descriptor("listSessions", [], sessionsSchema);
 var getSessionDetailDescriptor = descriptor(
@@ -4330,10 +4734,16 @@ var getSessionDetailDescriptor = descriptor(
   sessionDetailOrNullSchema
 );
 var getBalanceDescriptor = descriptor("getBalance", [], balanceSchema);
+var refreshBalanceDescriptor = descriptor("refreshBalance", [], balanceSchema);
 var getSettingsDescriptor = descriptor("getSettings", [], settingsSchema);
 var refreshExchangeRateDescriptor = descriptor("refreshExchangeRate", [], exchangeRateSchema);
 var getSessionCostTreeDescriptor = descriptor("getSessionCostTree", [], sessionCostTreeSchema);
 var getCostAnalyticsDescriptor = descriptor("getCostAnalytics", [], costAnalyticsSchema);
+var getUsageOverviewDescriptor = descriptor(
+  "getUsageOverview",
+  [{ name: "query", wire: "query", source: "json", codec: codec("RemoteUsageOverviewQuery", usageOverviewQuerySchema) }],
+  usageOverviewSchema
+);
 var exportLedgerDescriptor = descriptor(
   "exportLedger",
   [{ name: "format", wire: "format", source: "json", codec: codec("LedgerExportFormat", ledgerExportFormatSchema) }],
@@ -4344,10 +4754,12 @@ var MYMETER_REMOTE_DESCRIPTORS = [
   listSessionsDescriptor,
   getSessionDetailDescriptor,
   getBalanceDescriptor,
+  refreshBalanceDescriptor,
   getSettingsDescriptor,
   refreshExchangeRateDescriptor,
   getSessionCostTreeDescriptor,
   getCostAnalyticsDescriptor,
+  getUsageOverviewDescriptor,
   exportLedgerDescriptor
 ];
 var MYMETER_REMOTE_CONTRIBUTION = Object.freeze({
@@ -4366,6 +4778,8 @@ var MYMETER_LOCAL_TYPERT_CONTRIBUTION = Object.freeze({
     { name: "RemoteExchangeRateSnapshot", schema: exchangeRateSchema },
     { name: "RemoteSessionCostTree", schema: sessionCostTreeSchema },
     { name: "RemoteCostAnalyticsReport", schema: costAnalyticsSchema },
+    { name: "RemoteUsageOverviewQuery", schema: usageOverviewQuerySchema },
+    { name: "RemoteUsageOverviewReport", schema: usageOverviewSchema },
     { name: "LedgerExportFormat", schema: ledgerExportFormatSchema }
   ],
   model: {
@@ -4432,7 +4846,8 @@ function parseSnapshot(value) {
     balances,
     sessions,
     details,
-    ...record.exchangeRate === void 0 ? {} : { exchangeRate: parseExchangeRate(record.exchangeRate) }
+    ...record.exchangeRate === void 0 ? {} : { exchangeRate: parseExchangeRate(record.exchangeRate) },
+    ...record.ledgerGeneration === void 0 ? {} : { ledgerGeneration: nonNegativeInteger(record.ledgerGeneration, "ledgerGeneration") }
   };
 }
 function parseSessionCostTree(value) {
@@ -4529,6 +4944,83 @@ function parseCostAnalyticsReport(value) {
       (item) => parseAnalyticsTrendBucket(item, "costAnalytics.hourlyTrend")
     ),
     anomalies: array(record.anomalies, "costAnalytics.anomalies").map(parseAnalyticsAnomaly)
+  };
+}
+function parseUsageOverviewQuery(value) {
+  const record = object(value, "usageOverviewQuery");
+  const range = oneOf(record.range, ["today", "7d", "30d"], "usageOverviewQuery.range");
+  if (record.timeZone === void 0) return { range };
+  const timeZone = boundedString(record.timeZone, "usageOverviewQuery.timeZone", 100);
+  try {
+    new Intl.DateTimeFormat("en", { timeZone }).format(0);
+  } catch {
+    throw new Error("usageOverviewQuery.timeZone: expected valid IANA time zone");
+  }
+  return { range, timeZone };
+}
+function parseUsageOverviewReport(value) {
+  const record = object(value, "usageOverview");
+  const range = oneOf(record.range, ["today", "7d", "30d"], "usageOverview.range");
+  const expectedBuckets = range === "today" ? 24 : range === "7d" ? 7 : 30;
+  const trend = array(record.trend, "usageOverview.trend");
+  const topModels = array(record.topModels, "usageOverview.topModels");
+  if (trend.length !== expectedBuckets) {
+    throw new Error(`usageOverview.trend: expected ${expectedBuckets} buckets`);
+  }
+  if (topModels.length > 10) throw new Error("usageOverview.topModels: expected at most 10 models");
+  const timeZone = parseTimeZone(record.timeZone, "usageOverview.timeZone");
+  return {
+    range,
+    timeZone,
+    generatedAt: timestamp(record.generatedAt, "usageOverview.generatedAt"),
+    startAt: timestamp(record.startAt, "usageOverview.startAt"),
+    endAt: timestamp(record.endAt, "usageOverview.endAt"),
+    totals: parseUsageOverviewTotal(record.totals, "usageOverview.totals"),
+    trend: trend.map((item, index) => {
+      const bucket = object(item, `usageOverview.trend[${index}]`);
+      return {
+        key: boundedString(bucket.key, `usageOverview.trend[${index}].key`, 32),
+        startAt: timestamp(bucket.startAt, `usageOverview.trend[${index}].startAt`),
+        endAt: timestamp(bucket.endAt, `usageOverview.trend[${index}].endAt`),
+        ...parseUsageOverviewTotal(bucket, `usageOverview.trend[${index}]`),
+        models: bucket.models === void 0 ? [] : parseUsageOverviewModels(bucket.models, `usageOverview.trend[${index}].models`)
+      };
+    }),
+    topModels: topModels.map((item, index) => {
+      const model = object(item, `usageOverview.topModels[${index}]`);
+      return {
+        provider: boundedString(model.provider, `usageOverview.topModels[${index}].provider`, 120),
+        model: boundedString(model.model, `usageOverview.topModels[${index}].model`, 240),
+        ...parseUsageOverviewTotal(model, `usageOverview.topModels[${index}]`)
+      };
+    })
+  };
+}
+function parseUsageOverviewModels(value, field) {
+  return array(value, field).map((item, index) => {
+    const model = object(item, `${field}[${index}]`);
+    return {
+      provider: boundedString(model.provider, `${field}[${index}].provider`, 120),
+      model: boundedString(model.model, `${field}[${index}].model`, 240),
+      ...parseUsageOverviewTotal(model, `${field}[${index}]`)
+    };
+  });
+}
+function parseUsageOverviewTotal(value, field) {
+  const record = object(value, field);
+  const requestCount = nonNegativeInteger(record.requestCount, `${field}.requestCount`);
+  const pricedRequestCount = nonNegativeInteger(record.pricedRequestCount, `${field}.pricedRequestCount`);
+  const unknownRequestCount = nonNegativeInteger(record.unknownRequestCount, `${field}.unknownRequestCount`);
+  if (pricedRequestCount + unknownRequestCount !== requestCount) {
+    throw new Error(`${field}: request coverage counts do not add up`);
+  }
+  return {
+    amountMicroCny: nonNegativeInteger(record.amountMicroCny, `${field}.amountMicroCny`),
+    totalTokens: nonNegativeInteger(record.totalTokens, `${field}.totalTokens`),
+    requestCount,
+    pricedRequestCount,
+    unknownRequestCount,
+    coverage: oneOf(record.coverage, ["complete", "partial", "unavailable"], `${field}.coverage`)
   };
 }
 function parseAnalyticsTotal(value, field) {
@@ -4728,7 +5220,7 @@ function parseStage(value) {
   const record = object(value, "stage");
   return {
     id: requiredString(record.id, "stage.id"),
-    index: positiveInteger2(record.index, "stage.index"),
+    index: positiveInteger3(record.index, "stage.index"),
     isCurrent: boolean(record.isCurrent, "stage.isCurrent"),
     startedAt: requiredString(record.startedAt, "stage.startedAt"),
     completedAt: nullableString(record.completedAt, "stage.completedAt"),
@@ -4823,6 +5315,25 @@ function nonEmptyString(value, field) {
   if (!parsed.trim()) throw new Error(`${field}: expected non-empty string`);
   return parsed;
 }
+function boundedString(value, field, maximumLength) {
+  const parsed = nonEmptyString(value, field);
+  if (parsed.length > maximumLength) throw new Error(`${field}: string is too long`);
+  return parsed;
+}
+function parseTimeZone(value, field) {
+  const timeZone = boundedString(value, field, 100);
+  try {
+    new Intl.DateTimeFormat("en", { timeZone }).format(0);
+  } catch {
+    throw new Error(`${field}: expected valid IANA time zone`);
+  }
+  return timeZone;
+}
+function timestamp(value, field) {
+  const parsed = boundedString(value, field, 64);
+  if (!Number.isFinite(Date.parse(parsed))) throw new Error(`${field}: expected timestamp`);
+  return parsed;
+}
 function nullableString(value, field) {
   if (value === null) return null;
   return requiredString(value, field);
@@ -4846,9 +5357,14 @@ function nonNegativeNumber2(value, field) {
   if (number < 0) throw new Error(`${field}: expected non-negative number`);
   return number;
 }
-function positiveInteger2(value, field) {
+function positiveInteger3(value, field) {
   const number = finiteNumber(value, field);
   if (!Number.isInteger(number) || number <= 0) throw new Error(`${field}: expected positive integer`);
+  return number;
+}
+function nonNegativeInteger(value, field) {
+  const number = nonNegativeNumber2(value, field);
+  if (!Number.isSafeInteger(number)) throw new Error(`${field}: expected safe integer`);
   return number;
 }
 function nullableNumber(value, field) {
@@ -4880,6 +5396,7 @@ function createMyMeterHostRuntime({
   contextBreakdown,
   repository: configuredRepository,
   exchangeRate: configuredExchangeRate,
+  now: configuredNow,
   afterLedgerCommit,
   onAfterLedgerCommitError
 }) {
@@ -4900,6 +5417,7 @@ function createMyMeterHostRuntime({
   let batchDepth = 0;
   let ledgerDirty = false;
   let snapshotDirty = false;
+  let ledgerGeneration = 1;
   let installed = true;
   let lastBalance = {
     status: "unavailable",
@@ -4928,6 +5446,7 @@ function createMyMeterHostRuntime({
   let exchangeRateGeneration = 0;
   const activeRequestGenerations = /* @__PURE__ */ new Map();
   const detailCache = /* @__PURE__ */ new Map();
+  const usageOverviewCache = /* @__PURE__ */ new Map();
   const readSessionContext = (sessionId) => cloneRemoteContextBreakdown(contextBreakdown?.(sessionId) ?? null);
   const bumpActiveRequestGeneration = (sessionId) => {
     activeRequestGenerations.set(sessionId, (activeRequestGenerations.get(sessionId) ?? 0) + 1);
@@ -4976,16 +5495,19 @@ function createMyMeterHostRuntime({
       return value;
     } : void 0;
     cachedProviderFingerprint = providerFingerprint(configuredProviders);
-    cachedSnapshot = deepFreeze(createRemoteSnapshot(
-      journal.list(),
-      aggregateLedger(),
-      lastBalance,
-      latestExchangeRate,
-      readContext,
-      activeRequests,
-      configuredProviders,
-      (sessionId) => readModel.getSessionEvents(sessionId)
-    ));
+    cachedSnapshot = deepFreeze({
+      ...createRemoteSnapshot(
+        journal.list(),
+        aggregateLedger(),
+        lastBalance,
+        latestExchangeRate,
+        readContext,
+        activeRequests,
+        configuredProviders,
+        (sessionId) => readModel.getSessionEvents(sessionId)
+      ),
+      ledgerGeneration
+    });
     cachedContextFingerprint = contextBreakdown ? contextFingerprint(
       Object.keys(cachedSnapshot.details),
       (sessionId) => observedContext.get(sessionId) ?? null
@@ -5030,6 +5552,8 @@ function createMyMeterHostRuntime({
     const current = journal.upsert(event);
     if (sameCostEvent(previous, current)) return false;
     readModel.upsert(current);
+    ledgerGeneration += 1;
+    usageOverviewCache.clear();
     ledgerDirty = true;
     dirtyEventKeys.add(current.eventKey);
     snapshotDirty = true;
@@ -5156,6 +5680,26 @@ function createMyMeterHostRuntime({
     async getCostAnalytics() {
       return deepFreeze(createHostCostAnalyticsReport(journal.list().map(toHostCostEventInput)));
     },
+    async getUsageOverview(query) {
+      const generatedAt = configuredNow?.() ?? /* @__PURE__ */ new Date();
+      const timeZone = normalizeOverviewTimeZone(query.timeZone);
+      const dayKey = new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).format(generatedAt);
+      const cacheKey = JSON.stringify([ledgerGeneration, query.range, timeZone, dayKey]);
+      const cached = usageOverviewCache.get(cacheKey);
+      if (cached) return cached;
+      const report = deepFreeze(createHostUsageOverview(journal.list().map(toHostCostEventInput), {
+        range: query.range,
+        timeZone,
+        now: generatedAt
+      }));
+      usageOverviewCache.set(cacheKey, report);
+      return report;
+    },
     async exportLedger(format) {
       return exportCostEventLedger({
         format,
@@ -5165,6 +5709,16 @@ function createMyMeterHostRuntime({
     async getBalance() {
       if (balance) {
         const nextBalance = toRemoteBalance(await balance());
+        if (!sameRemoteBalance(lastBalance, nextBalance)) {
+          lastBalance = nextBalance;
+          emitSnapshot();
+        }
+      }
+      return lastBalance;
+    },
+    async refreshBalance() {
+      if (balance) {
+        const nextBalance = toRemoteBalance(await balance({ forceRefresh: true }));
         if (!sameRemoteBalance(lastBalance, nextBalance)) {
           lastBalance = nextBalance;
           emitSnapshot();
@@ -5239,6 +5793,15 @@ function createMyMeterHostRuntime({
       listeners.clear();
     }
   };
+}
+function normalizeOverviewTimeZone(value) {
+  const candidate = value?.trim() || "Asia/Shanghai";
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: candidate }).format(0);
+    return candidate;
+  } catch {
+    return "Asia/Shanghai";
+  }
 }
 function sameCostEvent(left, right) {
   if (!left) return false;
@@ -7516,7 +8079,7 @@ function createCordisBalanceProvider(ctx, config) {
       baseUrl: text2(config.baseUrl) || text2(settings.baseURL) || text2(environmentValue("DEEPSEEK_BASE_URL")) || "https://api.deepseek.com"
     };
   };
-  const provider = async () => {
+  const provider = async (options) => {
     const current = connection();
     if (!service || serviceBaseUrl !== current.baseUrl) {
       serviceBaseUrl = current.baseUrl;
@@ -7536,7 +8099,7 @@ function createCordisBalanceProvider(ctx, config) {
         }
       });
     }
-    return service.getSnapshot();
+    return service.getSnapshot(options);
   };
   const invalidate = () => service?.clearCache();
   const cleanups = [

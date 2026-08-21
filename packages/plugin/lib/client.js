@@ -26,7 +26,7 @@ __export(cordis_client_exports, {
   name: () => name
 });
 module.exports = __toCommonJS(cordis_client_exports);
-var import_react5 = require("react");
+var import_react6 = require("react");
 
 // packages/client/src/format.ts
 function formatCurrencyMinor(amountMinor, currency = "CNY", decimals = 3) {
@@ -609,7 +609,7 @@ function snapOverlayPosition(position, viewport = getViewportSize(), panelSize =
   }
   return { position: { x, y }, dockedEdge };
 }
-function buildViewModel(snapshot, settings, ui, asyncState = createIdleAsyncState({ treeAvailable: false, analyticsAvailable: false, exportAvailable: false })) {
+function buildViewModel(snapshot, settings, ui, asyncState = createIdleAsyncState({ treeAvailable: false, analyticsAvailable: false, usageAvailable: false, exportAvailable: false })) {
   const activeId = ui.selectedSessionId ?? settings.pinnedSessionId ?? snapshot.currentSessionId;
   const activeSession = activeId ? snapshot.sessions.find((session) => session.id === activeId) ?? null : null;
   const rawDetail = activeId ? snapshot.details[activeId] ?? null : null;
@@ -707,6 +707,7 @@ function buildViewModel(snapshot, settings, ui, asyncState = createIdleAsyncStat
     insights,
     sessionCostTree: asyncState.sessionCostTree,
     costAnalytics: asyncState.costAnalytics,
+    usageOverview: asyncState.usageOverview,
     ledgerExport: asyncState.ledgerExport,
     alerts: createAlerts(snapshot, statusCode, balances, insights.budget.message)
   };
@@ -721,10 +722,13 @@ function createMyMeterStore(options = {}) {
   let asyncState = createIdleAsyncState({
     treeAvailable: Boolean(remote.getSessionCostTree),
     analyticsAvailable: Boolean(remote.getCostAnalytics),
+    usageAvailable: Boolean(remote.getUsageOverview),
     exportAvailable: Boolean(remote.exportLedger)
   });
   let sessionCostTreeRequestId = 0;
   let costAnalyticsRequestId = 0;
+  let usageOverviewRequestId = 0;
+  const usageOverviewCache = /* @__PURE__ */ new Map();
   let ledgerExportRequestId = 0;
   let ui = {
     selectedSessionId: settings.pinnedSessionId,
@@ -732,9 +736,13 @@ function createMyMeterStore(options = {}) {
     overlayVisible: true,
     searchQuery: "",
     sortBy: "recent",
-    filterStatus: "all"
+    filterStatus: "all",
+    analyticsRange: "today"
   };
   let lastSyncedSessionId = remoteSnapshot.currentSessionId;
+  let lastLedgerGeneration = remoteSnapshot.ledgerGeneration;
+  let lastOverviewDayKey = usageOverviewDayKey();
+  let usageOverviewRefreshTimer = null;
   let state = recompute(remoteSnapshot, settings, ui, asyncState);
   const listeners = /* @__PURE__ */ new Set();
   const persistAndEmit = (nextSettings = settings) => {
@@ -753,9 +761,23 @@ function createMyMeterStore(options = {}) {
     }
   };
   const unsubscribeRemote = remote.subscribe((snapshot) => {
+    const ledgerChanged = snapshot.ledgerGeneration !== void 0 && snapshot.ledgerGeneration !== lastLedgerGeneration;
+    const currentOverviewDayKey = usageOverviewDayKey();
+    const dayChanged = currentOverviewDayKey !== lastOverviewDayKey;
+    lastOverviewDayKey = currentOverviewDayKey;
+    lastLedgerGeneration = snapshot.ledgerGeneration;
     remoteSnapshot = snapshot;
     state = recompute(remoteSnapshot, settings, ui, asyncState);
     emit();
+    if ((ledgerChanged || dayChanged) && remote.getUsageOverview && asyncState.usageOverview.data) {
+      usageOverviewCache.clear();
+      if (usageOverviewRefreshTimer === null) {
+        usageOverviewRefreshTimer = setTimeout(() => {
+          usageOverviewRefreshTimer = null;
+          void store.loadUsageOverview(ui.analyticsRange);
+        }, 500);
+      }
+    }
   });
   const unsubscribeSettings = subscribeToSettingsChanges(
     storage,
@@ -793,6 +815,8 @@ function createMyMeterStore(options = {}) {
     destroy() {
       unsubscribeRemote();
       unsubscribeSettings();
+      if (usageOverviewRefreshTimer !== null) clearTimeout(usageOverviewRefreshTimer);
+      usageOverviewRefreshTimer = null;
       listeners.clear();
     },
     selectSession(sessionId) {
@@ -822,6 +846,10 @@ function createMyMeterStore(options = {}) {
     },
     setFilterStatus(status) {
       setUi({ filterStatus: status });
+    },
+    setAnalyticsRange(range) {
+      setUi({ analyticsRange: range });
+      void store.loadUsageOverview(range);
     },
     setSettings(patch) {
       persistAndEmit({ ...settings, ...patch });
@@ -871,6 +899,10 @@ function createMyMeterStore(options = {}) {
       if (!remote.refreshExchangeRate) return;
       await remote.refreshExchangeRate();
     },
+    async refreshBalance() {
+      if (!remote.refreshBalance) return;
+      await remote.refreshBalance();
+    },
     async loadSessionCostTree() {
       if (!remote.getSessionCostTree) return;
       const requestId = ++sessionCostTreeRequestId;
@@ -895,6 +927,31 @@ function createMyMeterStore(options = {}) {
       } catch (error) {
         if (requestId !== costAnalyticsRequestId) return;
         setAsyncState({ costAnalytics: { status: "error", data: asyncState.costAnalytics.data, error: errorMessage(error) } });
+      }
+    },
+    async loadUsageOverview(range = ui.analyticsRange) {
+      if (!remote.getUsageOverview) return;
+      const currentRange = range;
+      const cached = usageOverviewCache.get(currentRange);
+      if (cached?.dayKey === usageOverviewDayKey()) {
+        setAsyncState({ usageOverview: { status: "ready", data: cached.data, error: null } });
+        return;
+      }
+      if (cached) {
+        usageOverviewCache.delete(currentRange);
+      }
+      const requestId = ++usageOverviewRequestId;
+      const previousData = asyncState.usageOverview.data?.range === currentRange ? asyncState.usageOverview.data : null;
+      setAsyncState({ usageOverview: { status: "loading", data: previousData, error: null } });
+      try {
+        const report = await remote.getUsageOverview({ range: currentRange });
+        if (requestId !== usageOverviewRequestId || ui.analyticsRange !== currentRange) return;
+        const mapped = mapUsageOverview(report);
+        usageOverviewCache.set(currentRange, { dayKey: usageOverviewDayKey(mapped.timeZone), data: mapped });
+        setAsyncState({ usageOverview: { status: "ready", data: mapped, error: null } });
+      } catch (error) {
+        if (requestId !== usageOverviewRequestId || ui.analyticsRange !== currentRange) return;
+        setAsyncState({ usageOverview: { status: "error", data: previousData, error: errorMessage(error) } });
       }
     },
     async exportLedger(format) {
@@ -1092,6 +1149,11 @@ function createIdleAsyncState(input) {
       data: null,
       error: null
     },
+    usageOverview: {
+      status: input.usageAvailable ? "idle" : "unavailable",
+      data: null,
+      error: null
+    },
     ledgerExport: {
       status: input.exportAvailable ? "idle" : "unavailable",
       format: null,
@@ -1142,6 +1204,60 @@ function mapCostAnalytics(report) {
       explanation: anomaly.explanation
     }))
   };
+}
+function mapUsageOverview(report) {
+  return {
+    range: report.range,
+    timeZone: report.timeZone,
+    generatedAt: report.generatedAt,
+    total: createAmountView(report.totals.amountMicroCny),
+    totalTokens: report.totals.totalTokens,
+    requestCount: report.totals.requestCount,
+    pricedRequestCount: report.totals.pricedRequestCount,
+    unknownRequestCount: report.totals.unknownRequestCount,
+    coverage: report.totals.coverage,
+    trend: report.trend.map((bucket) => ({
+      key: bucket.key,
+      startAt: bucket.startAt,
+      endAt: bucket.endAt,
+      amount: createAmountView(bucket.amountMicroCny),
+      totalTokens: bucket.totalTokens,
+      requestCount: bucket.requestCount,
+      coverage: bucket.coverage,
+      models: (bucket.models ?? []).map((model) => ({
+        provider: model.provider,
+        model: model.model,
+        amount: createAmountView(model.amountMicroCny),
+        totalTokens: model.totalTokens,
+        requestCount: model.requestCount,
+        pricedRequestCount: model.pricedRequestCount,
+        unknownRequestCount: model.unknownRequestCount,
+        coverage: model.coverage
+      }))
+    })),
+    topModels: report.topModels.map((model) => ({
+      provider: model.provider,
+      model: model.model,
+      amount: createAmountView(model.amountMicroCny),
+      totalTokens: model.totalTokens,
+      requestCount: model.requestCount,
+      pricedRequestCount: model.pricedRequestCount,
+      unknownRequestCount: model.unknownRequestCount,
+      coverage: model.coverage
+    }))
+  };
+}
+function usageOverviewDayKey(timeZone = "Asia/Shanghai", value = Date.now()) {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(new Date(value));
+  } catch {
+    return new Date(value).toISOString().slice(0, 10);
+  }
 }
 function mapTrendBucket(bucket) {
   return {
@@ -1417,10 +1533,208 @@ function createEmptySnapshot() {
 }
 
 // packages/client/src/components.tsx
-var import_react3 = require("react");
+var import_react4 = require("react");
+
+// packages/client/src/analytics-chart.tsx
+var import_react = require("react");
+var import_jsx_runtime = require("react/jsx-runtime");
+var DSH_COLORS = {
+  primary: "var(--dsw-alias-label-primary, #111827)",
+  secondary: "var(--dsw-alias-label-secondary, #4b5563)",
+  tertiary: "var(--dsw-alias-label-tertiary, #6b7280)",
+  layer1: "var(--dsw-alias-bg-layer-1, #ffffff)",
+  layer2: "var(--dsw-alias-bg-layer-2, #f3f4f6)",
+  border1: "var(--dsw-alias-border-l1, #d1d5db)",
+  brand: "var(--dsw-alias-brand-primary, #2563eb)"
+};
+var shellStyle = {
+  display: "grid",
+  gap: 6,
+  padding: "8px 8px 6px",
+  border: `1px solid ${DSH_COLORS.border1}`,
+  borderRadius: 6,
+  background: DSH_COLORS.layer1
+};
+var emptyStyle = {
+  margin: 0,
+  padding: "16px 4px",
+  color: DSH_COLORS.tertiary,
+  fontSize: 11,
+  textAlign: "center"
+};
+var labelRowStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(42px, 1fr))",
+  gap: 4,
+  color: DSH_COLORS.secondary,
+  fontSize: 9,
+  fontVariantNumeric: "tabular-nums"
+};
+var MODEL_COLORS = [
+  "var(--dsw-alias-brand-primary, #2563eb)",
+  "var(--dsw-alias-state-success-primary, #059669)",
+  "var(--dsw-alias-state-warning-primary, #d97706)",
+  "var(--dsw-alias-state-error-primary, #dc2626)",
+  "var(--dsw-alias-state-info-primary, #0891b2)",
+  "var(--dsw-alias-label-secondary, #7c3aed)"
+];
+function chartBuckets(range, trend) {
+  return range === "today" ? trend.slice(-24) : trend.slice(range === "7d" ? -7 : -30);
+}
+function chartLabel(range) {
+  if (range === "today") return "\u4ECA\u65E5\u6309\u5C0F\u65F6\u8D39\u7528\u8D8B\u52BF";
+  return range === "7d" ? "7\u5929\u6309\u5929\u8D39\u7528\u8D8B\u52BF" : "30\u5929\u6309\u5929\u8D39\u7528\u8D8B\u52BF";
+}
+function bucketLabel(range, key) {
+  if (range !== "today") {
+    const date = key.match(/^\d{4}-(\d{2})-(\d{2})$/u);
+    return date ? `${date[1]}-${date[2]}` : key;
+  }
+  const hour = key.match(/T(\d{2})$/u)?.[1] ?? key.slice(-2);
+  return `${hour}:00`;
+}
+function bucketTooltipLabel(range, key) {
+  if (range === "today") return bucketLabel(range, key);
+  return key;
+}
+function modelKey(model) {
+  return `${model.provider}\0${model.model}`;
+}
+function modelLabel(model) {
+  return model.provider && model.provider !== "unknown" ? `${model.provider} \xB7 ${model.model}` : model.model;
+}
+function axisLabelStep(range, bucketCount) {
+  if (bucketCount <= 8) return 1;
+  if (range === "today") return 3;
+  if (range === "7d") return 1;
+  return Math.max(1, Math.ceil(bucketCount / 8));
+}
+function bucketAmount(bucket) {
+  return bucket.coverage === "unavailable" ? "\u2014" : bucket.amount.label;
+}
+function AnalyticsChart({
+  range,
+  trend
+}) {
+  const buckets = chartBuckets(range, trend);
+  const [selectedKey, setSelectedKey] = (0, import_react.useState)(null);
+  const label = chartLabel(range);
+  if (buckets.length === 0) {
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { "aria-label": label, style: shellStyle, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { style: emptyStyle, children: "\u6682\u65E0\u8D8B\u52BF\u6570\u636E\u3002" }) });
+  }
+  const width = 640;
+  const height = 132;
+  const padX = 8;
+  const padTop = 10;
+  const padBottom = 22;
+  const plotHeight = height - padTop - padBottom;
+  const slot = (width - padX * 2) / buckets.length;
+  const barWidth = Math.max(4, Math.min(32, slot * 0.58));
+  const maxAmount = Math.max(1, ...buckets.map((bucket) => bucket.amount.microCny));
+  const labelStep = axisLabelStep(range, buckets.length);
+  const modelLegend = [...new Map(
+    buckets.flatMap((bucket) => bucket.models).filter((model) => model.amount.microCny > 0).map((model) => [modelKey(model), model])
+  ).values()].sort((left, right) => modelKey(left).localeCompare(modelKey(right)));
+  const modelColors = new Map(modelLegend.map((model, index) => [modelKey(model), MODEL_COLORS[index % MODEL_COLORS.length]]));
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { "aria-label": label, style: shellStyle, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { minWidth: 0 }, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("svg", { role: "img", "aria-label": label, viewBox: `0 0 ${width} ${height}`, style: { display: "block", width: "100%", height: "auto", aspectRatio: `${width} / ${height}` }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("line", { x1: padX, x2: width - padX, y1: height - padBottom, y2: height - padBottom, stroke: DSH_COLORS.border1 }),
+      buckets.map((bucket, index) => {
+        const value = bucket.amount.microCny;
+        const barHeight = value > 0 ? Math.max(2, value / maxAmount * plotHeight) : 2;
+        const x = padX + index * slot + (slot - barWidth) / 2;
+        const y = height - padBottom - barHeight;
+        const displayLabel = bucketLabel(range, bucket.key);
+        const modelSegments = bucket.models.filter((model) => model.amount.microCny > 0 && modelColors.has(modelKey(model)));
+        const modelTotal = modelSegments.reduce((sum, model) => sum + model.amount.microCny, 0);
+        const scale = modelTotal > value && modelTotal > 0 ? value / modelTotal : 1;
+        let segmentBottom = height - padBottom;
+        return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("g", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("title", { children: `${bucketTooltipLabel(range, bucket.key)} \xB7 ${bucketAmount(bucket)} \xB7 ${bucket.requestCount} \u6B21` }),
+          modelSegments.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            "rect",
+            {
+              x,
+              y,
+              width: barWidth,
+              height: barHeight,
+              rx: 2,
+              fill: selectedKey === bucket.key ? DSH_COLORS.primary : DSH_COLORS.brand,
+              tabIndex: 0,
+              role: "img",
+              "aria-label": `${displayLabel} ${bucketAmount(bucket)}\uFF0C${bucket.totalTokens} Token\uFF0C${bucket.requestCount} \u6B21\u8BF7\u6C42`,
+              onFocus: () => setSelectedKey(bucket.key),
+              onClick: () => setSelectedKey(bucket.key)
+            }
+          ) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+            modelTotal < value ? (() => {
+              const remainderHeight = (value - modelTotal) / maxAmount * plotHeight;
+              segmentBottom -= remainderHeight;
+              return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                "rect",
+                {
+                  x,
+                  y: segmentBottom,
+                  width: barWidth,
+                  height: remainderHeight,
+                  rx: 2,
+                  fill: selectedKey === bucket.key ? DSH_COLORS.primary : DSH_COLORS.brand,
+                  tabIndex: -1,
+                  "aria-hidden": "true",
+                  onFocus: () => setSelectedKey(bucket.key),
+                  onClick: () => setSelectedKey(bucket.key)
+                }
+              );
+            })() : null,
+            modelSegments.map((model, segmentIndex) => {
+              const segmentHeight = Math.max(1, model.amount.microCny * scale / maxAmount * plotHeight);
+              segmentBottom -= segmentHeight;
+              const modelName = modelLabel(model);
+              return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                "rect",
+                {
+                  x,
+                  y: segmentBottom,
+                  width: barWidth,
+                  height: segmentHeight,
+                  rx: segmentIndex === modelSegments.length - 1 ? 2 : 0,
+                  fill: selectedKey === bucket.key ? DSH_COLORS.primary : modelColors.get(modelKey(model)),
+                  tabIndex: segmentIndex === 0 ? 0 : -1,
+                  role: segmentIndex === 0 ? "img" : void 0,
+                  "aria-label": segmentIndex === 0 ? `${displayLabel} ${modelName} ${bucketAmount(bucket)}\uFF0C${bucket.totalTokens} Token\uFF0C${bucket.requestCount} \u6B21\u8BF7\u6C42` : void 0,
+                  onFocus: () => setSelectedKey(bucket.key),
+                  onClick: () => setSelectedKey(bucket.key)
+                },
+                modelKey(model)
+              );
+            })
+          ] }),
+          index === buckets.length - 1 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("circle", { cx: x + barWidth / 2, cy: y, r: 2.5, fill: DSH_COLORS.primary }) : null,
+          index % labelStep === 0 || range !== "today" && index === buckets.length - 1 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("text", { x: x + barWidth / 2, y: height - 6, textAnchor: "middle", fill: DSH_COLORS.tertiary, fontSize: "9", children: displayLabel }) : null
+        ] }, bucket.key);
+      })
+    ] }) }),
+    modelLegend.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { role: "list", "aria-label": "\u6A21\u578B\u56FE\u4F8B", style: { display: "flex", flexWrap: "wrap", gap: "4px 10px", color: DSH_COLORS.secondary, fontSize: 10 }, children: modelLegend.map((model) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { role: "listitem", style: { display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { "aria-hidden": "true", style: { width: 8, height: 8, flex: "0 0 auto", borderRadius: 2, background: modelColors.get(modelKey(model)) } }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: modelLabel(model) })
+    ] }, modelKey(model))) }) : null,
+    selectedKey ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { style: { margin: 0, color: DSH_COLORS.secondary, fontSize: 10, fontVariantNumeric: "tabular-nums" }, children: (() => {
+      const bucket = buckets.find((item) => item.key === selectedKey);
+      return bucket ? `${bucketLabel(range, bucket.key)} \xB7 ${bucketAmount(bucket)} \xB7 ${formatTokenLabel(bucket.totalTokens)} \xB7 ${bucket.requestCount} \u6B21\u8BF7\u6C42` : "";
+    })() }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: labelRowStyle, children: buckets.slice(-3).map((bucket) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: [
+      bucketLabel(range, bucket.key),
+      " ",
+      bucketAmount(bucket)
+    ] }, bucket.key)) })
+  ] });
+}
+function formatTokenLabel(tokens) {
+  return `${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(tokens)} Token`;
+}
 
 // packages/client/src/session-stages.tsx
-var import_react = require("react");
+var import_react2 = require("react");
 
 // packages/client/src/token-breakdown.ts
 function buildTokenCostBreakdown(buckets) {
@@ -1449,8 +1763,8 @@ function findBucket(buckets, label) {
 }
 
 // packages/client/src/session-stages.tsx
-var import_jsx_runtime = require("react/jsx-runtime");
-var DSH_COLORS = {
+var import_jsx_runtime2 = require("react/jsx-runtime");
+var DSH_COLORS2 = {
   primary: "var(--dsw-alias-label-primary, #111827)",
   secondary: "var(--dsw-alias-label-secondary, #4b5563)",
   tertiary: "var(--dsw-alias-label-tertiary, #6b7280)",
@@ -1464,20 +1778,20 @@ var CURRENT_STAGE_COLOR = "#2563eb";
 var PRICING_COLORS = {
   peak: "var(--dsw-alias-state-warn-primary, #b45309)",
   offpeak: "var(--dsw-alias-state-success-primary, #0f766e)",
-  unknown: DSH_COLORS.brand
+  unknown: DSH_COLORS2.brand
 };
 function SessionStageTabs({
   detail,
   children,
   idPrefix = `mymeter-stage-${detail.id}`
 }) {
-  const stages = (0, import_react.useMemo)(() => getSessionStages(detail), [detail]);
+  const stages = (0, import_react2.useMemo)(() => getSessionStages(detail), [detail]);
   const currentStageId = selectedDefaultStageId(stages);
-  const [selectedStageId, setSelectedStageId] = (0, import_react.useState)(currentStageId);
-  const [helpPinned, setHelpPinned] = (0, import_react.useState)(false);
-  const [helpHovered, setHelpHovered] = (0, import_react.useState)(false);
-  (0, import_react.useEffect)(() => setSelectedStageId(currentStageId), [currentStageId]);
-  (0, import_react.useEffect)(() => {
+  const [selectedStageId, setSelectedStageId] = (0, import_react2.useState)(currentStageId);
+  const [helpPinned, setHelpPinned] = (0, import_react2.useState)(false);
+  const [helpHovered, setHelpHovered] = (0, import_react2.useState)(false);
+  (0, import_react2.useEffect)(() => setSelectedStageId(currentStageId), [currentStageId]);
+  (0, import_react2.useEffect)(() => {
     if (!stages.some((stage) => stage.id === selectedStageId)) {
       setSelectedStageId(currentStageId);
     }
@@ -1501,9 +1815,9 @@ function SessionStageTabs({
     setSelectedStageId(nextStage.id);
     event.currentTarget.parentElement?.querySelectorAll('[role="tab"]')[nextIndex]?.focus();
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { display: "grid", gap: 6, minWidth: 0 }, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { display: "flex", alignItems: "flex-start", gap: 4, minWidth: 0, position: "relative" }, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { display: "grid", gap: 6, minWidth: 0 }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { display: "flex", alignItems: "flex-start", gap: 4, minWidth: 0, position: "relative" }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
         "div",
         {
           role: "tablist",
@@ -1522,7 +1836,7 @@ function SessionStageTabs({
           children: stages.map((stage, index) => {
             const selected = stage.id === selectedStage.id;
             const accent = PRICING_COLORS[stage.pricingZone];
-            return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+            return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
               "button",
               {
                 id: `${idPrefix}-tab-${stage.id}`,
@@ -1546,17 +1860,17 @@ function SessionStageTabs({
                   whiteSpace: "nowrap",
                   padding: "5px 8px",
                   borderRadius: 6,
-                  border: selected ? `1px solid ${accent}` : `1px solid ${DSH_COLORS.border1}`,
-                  background: selected ? `color-mix(in srgb, ${accent} 16%, ${DSH_COLORS.layer2})` : DSH_COLORS.layer2,
-                  color: DSH_COLORS.primary,
+                  border: selected ? `1px solid ${accent}` : `1px solid ${DSH_COLORS2.border1}`,
+                  background: selected ? `color-mix(in srgb, ${accent} 16%, ${DSH_COLORS2.layer2})` : DSH_COLORS2.layer2,
+                  color: DSH_COLORS2.primary,
                   fontSize: 10,
                   fontWeight: selected ? 800 : 650,
                   fontVariantNumeric: "tabular-nums",
                   cursor: "pointer"
                 },
                 children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: `\u8BA1\u8D39\u6BB5 #${stage.index}` }),
-                  stage.isCurrent ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                  /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: `\u8BA1\u8D39\u6BB5 #${stage.index}` }),
+                  stage.isCurrent ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
                     "span",
                     {
                       "aria-hidden": "true",
@@ -1564,7 +1878,7 @@ function SessionStageTabs({
                         padding: "2px 5px",
                         borderRadius: 4,
                         background: CURRENT_STAGE_COLOR,
-                        color: DSH_COLORS.base,
+                        color: DSH_COLORS2.base,
                         fontSize: 9,
                         fontWeight: 800,
                         lineHeight: 1
@@ -1579,8 +1893,8 @@ function SessionStageTabs({
           })
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { flex: "0 0 22px", position: "relative" }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { flex: "0 0 22px", position: "relative" }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
           "button",
           {
             type: "button",
@@ -1608,9 +1922,9 @@ function SessionStageTabs({
               height: 22,
               padding: 0,
               borderRadius: "50%",
-              border: `1px solid ${DSH_COLORS.border1}`,
-              background: DSH_COLORS.layer2,
-              color: DSH_COLORS.secondary,
+              border: `1px solid ${DSH_COLORS2.border1}`,
+              background: DSH_COLORS2.layer2,
+              color: DSH_COLORS2.secondary,
               fontSize: 12,
               fontWeight: 800,
               cursor: "help"
@@ -1618,7 +1932,7 @@ function SessionStageTabs({
             children: "?"
           }
         ),
-        helpOpen ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        helpOpen ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
           "div",
           {
             id: helpId,
@@ -1632,9 +1946,9 @@ function SessionStageTabs({
               boxSizing: "border-box",
               padding: "8px 10px",
               borderRadius: 6,
-              border: `1px solid ${DSH_COLORS.border1}`,
-              background: DSH_COLORS.base,
-              color: DSH_COLORS.primary,
+              border: `1px solid ${DSH_COLORS2.border1}`,
+              background: DSH_COLORS2.base,
+              color: DSH_COLORS2.primary,
               boxShadow: "0 8px 24px color-mix(in srgb, var(--dsw-alias-label-primary, #111827) 18%, transparent)",
               fontSize: 11,
               lineHeight: 1.5
@@ -1644,7 +1958,7 @@ function SessionStageTabs({
         ) : null
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { id: panelId, role: "tabpanel", "aria-labelledby": tabId, "aria-label": stageTabLabel(selectedStage), style: { minWidth: 0 }, children: children(selectedStage, !selectedStage.isCurrent) })
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { id: panelId, role: "tabpanel", "aria-labelledby": tabId, "aria-label": stageTabLabel(selectedStage), style: { minWidth: 0 }, children: children(selectedStage, !selectedStage.isCurrent) })
   ] });
 }
 function StageMetadataPanel({ stage }) {
@@ -1657,7 +1971,7 @@ function StageMetadataPanel({ stage }) {
     ["\u4EF7\u683C\u7248\u672C", formatStagePriceVersion(stage.priceVersion)],
     ...stage.exchangeRateLabel && !stage.currency ? [["\u8BA1\u4EF7\u6C47\u7387", stage.exchangeRateLabel]] : []
   ];
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
     "section",
     {
       "aria-label": "\u8BA1\u8D39\u6BB5\u4FE1\u606F",
@@ -1666,22 +1980,22 @@ function StageMetadataPanel({ stage }) {
         gap: 8,
         minWidth: 0,
         padding: "10px 11px 9px",
-        background: DSH_COLORS.layer2,
-        border: `1px solid ${DSH_COLORS.border2}`,
+        background: DSH_COLORS2.layer2,
+        border: `1px solid ${DSH_COLORS2.border2}`,
         borderRadius: 8,
-        color: DSH_COLORS.primary
+        color: DSH_COLORS2.primary
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { style: { color: DSH_COLORS.brand, fontSize: 12 }, children: "\u8BA1\u8D39\u6BB5\u4FE1\u606F" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("strong", { style: { color: DSH_COLORS2.brand, fontSize: 12 }, children: "\u8BA1\u8D39\u6BB5\u4FE1\u606F" }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
             "span",
             {
               style: {
                 padding: "3px 6px",
                 borderRadius: 4,
                 background: stage.isCurrent ? CURRENT_STAGE_COLOR : "transparent",
-                color: stage.isCurrent ? DSH_COLORS.base : DSH_COLORS.tertiary,
+                color: stage.isCurrent ? DSH_COLORS2.base : DSH_COLORS2.tertiary,
                 fontSize: 10,
                 fontWeight: 800,
                 lineHeight: 1
@@ -1690,7 +2004,7 @@ function StageMetadataPanel({ stage }) {
             }
           )
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
           "dl",
           {
             style: {
@@ -1700,17 +2014,17 @@ function StageMetadataPanel({ stage }) {
               minWidth: 0,
               margin: 0,
               paddingTop: 8,
-              borderTop: `1px solid ${DSH_COLORS.border1}`
+              borderTop: `1px solid ${DSH_COLORS2.border1}`
             },
             children: [
-              items.map(([label, value]) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { display: "grid", gap: 3, minWidth: 0 }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("dt", { style: { color: DSH_COLORS.tertiary, fontSize: 10 }, children: label }),
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("dd", { style: { margin: 0, color: DSH_COLORS.primary, fontSize: 11, fontWeight: 700, overflowWrap: "anywhere" }, children: value })
+              items.map(([label, value]) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { display: "grid", gap: 3, minWidth: 0 }, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dt", { style: { color: DSH_COLORS2.tertiary, fontSize: 10 }, children: label }),
+                /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dd", { style: { margin: 0, color: DSH_COLORS2.primary, fontSize: 11, fontWeight: 700, overflowWrap: "anywhere" }, children: value })
               ] }, label)),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { display: "grid", gap: 6, minWidth: 0, gridColumn: "1 / -1" }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("dt", { style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0 }, children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { color: DSH_COLORS.tertiary, fontSize: 10 }, children: "\u5F53\u524D\u8D39\u7387" }),
-                  stage.pricingZone !== "unknown" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { display: "grid", gap: 6, minWidth: 0, gridColumn: "1 / -1" }, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("dt", { style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0 }, children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { color: DSH_COLORS2.tertiary, fontSize: 10 }, children: "\u5F53\u524D\u8D39\u7387" }),
+                  stage.pricingZone !== "unknown" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
                     "span",
                     {
                       style: {
@@ -1725,12 +2039,12 @@ function StageMetadataPanel({ stage }) {
                       children: stage.pricingZoneLabel
                     }
                   ) : null,
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { style: { marginLeft: "auto", color: DSH_COLORS.tertiary, fontSize: 9 }, children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { style: { marginLeft: "auto", color: DSH_COLORS2.tertiary, fontSize: 9 }, children: [
                     stage.currency === "USD" ? "\u7F8E\u5143" : stage.currency === "CNY" || !stage.currency ? "\u5143" : stage.currency,
                     " / \u767E\u4E07 Token"
                   ] })
                 ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
                   "dd",
                   {
                     style: {
@@ -1743,7 +2057,7 @@ function StageMetadataPanel({ stage }) {
                       ["\u8F93\u5165", formatStageRate(rates.cacheMiss)],
                       ["\u7F13\u5B58", formatStageRate(rates.cacheHit)],
                       ["\u8F93\u51FA", formatStageRate(rates.output)]
-                    ].map(([label, value]) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+                    ].map(([label, value]) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
                       "span",
                       {
                         style: {
@@ -1752,12 +2066,12 @@ function StageMetadataPanel({ stage }) {
                           minWidth: 0,
                           padding: "5px 6px",
                           borderRadius: 4,
-                          border: `1px solid ${DSH_COLORS.border2}`,
-                          background: DSH_COLORS.base
+                          border: `1px solid ${DSH_COLORS2.border2}`,
+                          background: DSH_COLORS2.base
                         },
                         children: [
-                          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { color: DSH_COLORS.tertiary, fontSize: 9 }, children: label }),
-                          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { style: { color: DSH_COLORS.primary, fontSize: 11, overflowWrap: "anywhere" }, children: value })
+                          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { color: DSH_COLORS2.tertiary, fontSize: 9 }, children: label }),
+                          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("strong", { style: { color: DSH_COLORS2.primary, fontSize: 11, overflowWrap: "anywhere" }, children: value })
                         ]
                       },
                       label
@@ -1765,7 +2079,7 @@ function StageMetadataPanel({ stage }) {
                   }
                 )
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
                 "div",
                 {
                   style: {
@@ -1774,11 +2088,11 @@ function StageMetadataPanel({ stage }) {
                     gap: 8,
                     gridColumn: "1 / -1",
                     paddingTop: 8,
-                    borderTop: `1px solid ${DSH_COLORS.border2}`
+                    borderTop: `1px solid ${DSH_COLORS2.border2}`
                   },
                   children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("dt", { style: { color: DSH_COLORS.tertiary, fontSize: 10 }, children: "\u65F6\u95F4\u8303\u56F4" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("dd", { style: { margin: 0, color: DSH_COLORS.secondary, fontSize: 11, fontWeight: 650, fontVariantNumeric: "tabular-nums" }, children: formatStageTimeRange(stage) })
+                    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dt", { style: { color: DSH_COLORS2.tertiary, fontSize: 10 }, children: "\u65F6\u95F4\u8303\u56F4" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dd", { style: { margin: 0, color: DSH_COLORS2.secondary, fontSize: 11, fontWeight: 650, fontVariantNumeric: "tabular-nums" }, children: formatStageTimeRange(stage) })
                   ]
                 }
               )
@@ -1790,7 +2104,7 @@ function StageMetadataPanel({ stage }) {
   );
 }
 function contextBreakdownRows(contextBreakdown, unavailableLabel = "\u6682\u4E0D\u53EF\u7528") {
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
     "div",
     {
       style: {
@@ -1799,24 +2113,24 @@ function contextBreakdownRows(contextBreakdown, unavailableLabel = "\u6682\u4E0D
         minWidth: 0,
         marginTop: 6,
         paddingTop: 8,
-        borderTop: `1px solid ${DSH_COLORS.border2}`
+        borderTop: `1px solid ${DSH_COLORS2.border2}`
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { style: { fontSize: 10, color: DSH_COLORS.secondary }, children: "\u4E0A\u4E0B\u6587\u6784\u6210\uFF08\u4F30\u7B97\uFF09" }),
-        contextBreakdown ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("strong", { style: { fontSize: 10, color: DSH_COLORS2.secondary }, children: "\u4E0A\u4E0B\u6587\u6784\u6210\uFF08\u4F30\u7B97\uFF09" }),
+        contextBreakdown ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
           infoLine("\u7CFB\u7EDF\u63D0\u793A\u8BCD", `${formatTokenCount(contextBreakdown.systemTokens)} Token`),
           infoLine("\u5DE5\u5177\u5B9A\u4E49", `${formatTokenCount(contextBreakdown.toolsTokens)} Token`),
           infoLine("\u4F1A\u8BDD\u6D88\u606F", `${formatTokenCount(contextBreakdown.messageTokens)} Token`),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { fontSize: 9, color: DSH_COLORS.tertiary }, children: "\u4F30\u7B97\u503C\uFF0C\u4E0D\u53C2\u4E0E\u8D39\u7528\u8BA1\u7B97" })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { fontSize: 10, color: DSH_COLORS.tertiary }, children: unavailableLabel })
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { fontSize: 9, color: DSH_COLORS2.tertiary }, children: "\u4F30\u7B97\u503C\uFF0C\u4E0D\u53C2\u4E0E\u8D39\u7528\u8BA1\u7B97" })
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { fontSize: 10, color: DSH_COLORS2.tertiary }, children: unavailableLabel })
       ]
     }
   );
 }
 function infoLine(label, value) {
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, minWidth: 0, fontSize: 11 }, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { color: DSH_COLORS.secondary }, children: label }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { style: { color: DSH_COLORS.primary, textAlign: "right", fontVariantNumeric: "tabular-nums" }, children: value })
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, minWidth: 0, fontSize: 11 }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { color: DSH_COLORS2.secondary }, children: label }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("strong", { style: { color: DSH_COLORS2.primary, textAlign: "right", fontVariantNumeric: "tabular-nums" }, children: value })
   ] });
 }
 function getSessionStages(detail) {
@@ -1882,8 +2196,8 @@ function stageFromDetail(detail) {
 }
 
 // packages/client/src/update-ui.tsx
-var import_react2 = require("react");
-var import_jsx_runtime2 = require("react/jsx-runtime");
+var import_react3 = require("react");
+var import_jsx_runtime3 = require("react/jsx-runtime");
 var COLORS = {
   primary: "var(--dsw-alias-label-primary, #111827)",
   secondary: "var(--dsw-alias-label-secondary, #4b5563)",
@@ -1897,9 +2211,9 @@ var COLORS = {
   danger: "var(--dsw-alias-state-danger-primary, #b91c1c)"
 };
 function MyMeterUpdateControl({ controller, isLoopback }) {
-  const state = (0, import_react2.useSyncExternalStore)(controller.subscribe, controller.getState, controller.getState);
+  const state = (0, import_react3.useSyncExternalStore)(controller.subscribe, controller.getState, controller.getState);
   if (!isLoopback) return null;
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
     "div",
     {
       "aria-label": "MyMeter \u66F4\u65B0",
@@ -1912,21 +2226,21 @@ function MyMeterUpdateControl({ controller, isLoopback }) {
         flexWrap: "wrap"
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(UpdateStatusText, { state }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(UpdateActions, { controller, state }),
-        state.status === "failed" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { role: "alert", style: { color: COLORS.danger, fontSize: 11, overflowWrap: "anywhere" }, children: state.error }) : null,
-        state.status === "restartRequired" && !state.restartPromptDismissed ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(RestartRequiredDialog, { state, onDismiss: controller.dismissRestartPrompt }) : null
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(UpdateStatusText, { state }),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(UpdateActions, { controller, state }),
+        state.status === "failed" ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { role: "alert", style: { color: COLORS.danger, fontSize: 11, overflowWrap: "anywhere" }, children: state.error }) : null,
+        state.status === "restartRequired" && !state.restartPromptDismissed ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(RestartRequiredDialog, { state, onDismiss: controller.dismissRestartPrompt }) : null
       ]
     }
   );
 }
 function UpdateActions({ controller, state }) {
   if (state.status === "updateAvailable") {
-    return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", onClick: () => void controller.install(), style: primaryButtonStyle, children: "\u66F4\u65B0\u63D2\u4EF6" });
+    return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => void controller.install(), style: primaryButtonStyle, children: "\u66F4\u65B0\u63D2\u4EF6" });
   }
   if (state.status === "restartRequired") return null;
   const disabled = state.status === "checking" || state.status === "installing";
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
     "button",
     {
       type: "button",
@@ -1944,13 +2258,13 @@ function UpdateActions({ controller, state }) {
 function UpdateStatusText({ state }) {
   const label = statusLabel(state);
   if (!label) return null;
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { color: statusColor(state), fontSize: 11, fontWeight: 600, overflowWrap: "anywhere" }, children: label });
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { color: statusColor(state), fontSize: 11, fontWeight: 600, overflowWrap: "anywhere" }, children: label });
 }
 function RestartRequiredDialog({
   state,
   onDismiss
 }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
     "div",
     {
       role: "dialog",
@@ -1971,14 +2285,14 @@ function RestartRequiredDialog({
         zIndex: 2147483647
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("strong", { id: "mymeter-update-dialog-title", style: { fontSize: 13 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("strong", { id: "mymeter-update-dialog-title", style: { fontSize: 13 }, children: [
           "MyMeter v",
           state.installedVersion,
           " \u5DF2\u5B89\u88C5"
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { color: COLORS.secondary, fontSize: 12, lineHeight: 1.5 }, children: "\u9700\u8981\u91CD\u542F dsh \u624D\u80FD\u4F7F\u7528\u65B0\u7248\u672C\u3002\u8BF7\u56DE\u5230\u8FD0\u884C dsh \u7684\u7EC8\u7AEF\u624B\u52A8\u91CD\u542F\uFF0C\u91CD\u542F\u540E\u672C\u9875\u4F1A\u81EA\u52A8\u6062\u590D\u3002" }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { style: { color: COLORS.tertiary, fontSize: 11 }, children: restartPhaseLabel(state.restartPhase) }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { style: { display: "flex", justifyContent: "flex-end" }, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", onClick: onDismiss, style: secondaryButtonStyle, children: "\u77E5\u9053\u4E86" }) })
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { color: COLORS.secondary, fontSize: 12, lineHeight: 1.5 }, children: "\u9700\u8981\u91CD\u542F dsh \u624D\u80FD\u4F7F\u7528\u65B0\u7248\u672C\u3002\u8BF7\u56DE\u5230\u8FD0\u884C dsh \u7684\u7EC8\u7AEF\u624B\u52A8\u91CD\u542F\uFF0C\u91CD\u542F\u540E\u672C\u9875\u4F1A\u81EA\u52A8\u6062\u590D\u3002" }),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { color: COLORS.tertiary, fontSize: 11 }, children: restartPhaseLabel(state.restartPhase) }),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { style: { display: "flex", justifyContent: "flex-end" }, children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: onDismiss, style: secondaryButtonStyle, children: "\u77E5\u9053\u4E86" }) })
       ]
     }
   );
@@ -2038,9 +2352,83 @@ var primaryButtonStyle = {
   cursor: "pointer"
 };
 
+// packages/client/src/usage-overview.tsx
+var import_jsx_runtime4 = require("react/jsx-runtime");
+var DSH_COLORS3 = {
+  primary: "var(--dsw-alias-label-primary, #111827)",
+  secondary: "var(--dsw-alias-label-secondary, #4b5563)",
+  layer1: "var(--dsw-alias-bg-layer-1, #ffffff)",
+  border1: "var(--dsw-alias-border-l1, #d1d5db)"
+};
+var sectionStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+  gap: 6
+};
+var itemStyle = {
+  minWidth: 0,
+  padding: "7px 8px",
+  border: `1px solid ${DSH_COLORS3.border1}`,
+  borderRadius: 6,
+  background: DSH_COLORS3.layer1
+};
+var labelStyle = {
+  display: "block",
+  color: DSH_COLORS3.secondary,
+  fontSize: 10,
+  fontWeight: 700
+};
+var valueStyle = {
+  display: "block",
+  marginTop: 2,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  color: DSH_COLORS3.primary,
+  fontSize: 12,
+  fontWeight: 750,
+  fontVariantNumeric: "tabular-nums",
+  whiteSpace: "nowrap"
+};
+function UsageOverview({ overview }) {
+  const items = [
+    ["\u8D39\u7528", overview.coverage === "unavailable" ? "\u2014" : overview.total.label],
+    ["Token", formatTokenCount(overview.totalTokens)],
+    ["\u8BF7\u6C42\u6570", formatTokenCount(overview.requestCount)],
+    ["Coverage", overview.coverage === "complete" ? "\u5B8C\u6574" : overview.coverage === "partial" ? "\u90E8\u5206\u8BA1\u4EF7" : "\u4E0D\u53EF\u7528"]
+  ];
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { "aria-label": "\u7528\u91CF\u6982\u89C8", style: { display: "grid", gap: 6 }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { style: sectionStyle, children: items.map(([label, value]) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: itemStyle, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { style: labelStyle, children: label }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { style: valueStyle, children: value })
+    ] }, label)) }),
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: { display: "grid", gap: 3 }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { style: { color: DSH_COLORS3.primary, fontSize: 11 }, children: "\u4E3B\u8981\u6A21\u578B" }),
+      overview.topModels.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { style: { color: DSH_COLORS3.secondary, fontSize: 11 }, children: "\u6682\u65E0\u6A21\u578B\u7528\u91CF\u3002" }) : overview.topModels.slice(0, 3).map((model) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8, minWidth: 0, fontSize: 11 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: DSH_COLORS3.secondary }, children: [
+          model.model,
+          " \xB7 ",
+          formatTokenCount(model.totalTokens),
+          " Token"
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { style: { color: DSH_COLORS3.primary, fontVariantNumeric: "tabular-nums" }, children: model.coverage === "unavailable" ? "\u2014" : model.amount.label })
+      ] }, `${model.provider}:${model.model}`))
+    ] })
+  ] });
+}
+
 // packages/client/src/components.tsx
-var import_jsx_runtime3 = require("react/jsx-runtime");
-var DSH_COLORS2 = {
+var import_jsx_runtime5 = require("react/jsx-runtime");
+var STATUS_FILTER_OPTIONS = [
+  "idle",
+  "billing",
+  "settled",
+  "unknown",
+  "balance_expired",
+  "balance_insufficient",
+  "failed",
+  "aborted"
+];
+var DSH_COLORS4 = {
   primary: "var(--dsw-alias-label-primary, #111827)",
   secondary: "var(--dsw-alias-label-secondary, #4b5563)",
   tertiary: "var(--dsw-alias-label-tertiary, #6b7280)",
@@ -2088,18 +2476,23 @@ function releaseConversationOverlay(store) {
   });
 }
 function useMyMeterStoreState(store) {
-  return (0, import_react3.useSyncExternalStore)(store.subscribe, store.getState, store.getState);
+  return (0, import_react4.useSyncExternalStore)(store.subscribe, store.getState, store.getState);
 }
 function CompactMeter({
   store,
   onOpenTokenBilling
 }) {
   const state = useMyMeterStoreState(store);
+  (0, import_react4.useEffect)(() => {
+    if (state.viewModel.usageOverview.status === "idle") {
+      void store.loadUsageOverview("today");
+    }
+  }, [state.viewModel.usageOverview.status, store]);
   const opensPage = Boolean(onOpenTokenBilling);
   const isBilling = state.viewModel.status.code === "billing";
   const inProgressLabel = "\u751F\u6210\u4E2D";
   const { detail, currentRequest, sessionTotal } = state.viewModel;
-  const [expandedReceiptKey, setExpandedReceiptKey] = (0, import_react3.useState)(null);
+  const [expandedReceiptKey, setExpandedReceiptKey] = (0, import_react4.useState)(null);
   const breakdown = detail ? buildTokenCostBreakdown(detail.tokenBuckets) : null;
   const turns = detail?.turns && detail.turns.length > 0 ? detail.turns : null;
   const showReceipt = Boolean(turns);
@@ -2130,8 +2523,8 @@ function CompactMeter({
     fontSize: 11,
     fontWeight: 600
   });
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", position: "relative" }, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("style", { children: `
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", position: "relative" }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("style", { children: `
           @keyframes thermalLaserScan {
             0% { transform: translateX(-100%); opacity: 0; }
             30% { opacity: 1; }
@@ -2149,7 +2542,7 @@ function CompactMeter({
             100% { opacity: 0.6; transform: scale(0.95); }
           }
         ` }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
       "button",
       {
         type: "button",
@@ -2177,7 +2570,34 @@ function CompactMeter({
           userSelect: "none"
         },
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+            "div",
+            {
+              "data-testid": "mymeter-today-summary",
+              "aria-label": "\u4ECA\u65E5\u7528\u91CF\u6458\u8981",
+              style: {
+                display: "grid",
+                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                gap: 3,
+                paddingBottom: 4,
+                borderBottom: "1px solid var(--dsw-alias-border-l1, #e5e7eb)",
+                fontSize: 8.5,
+                fontVariantNumeric: "tabular-nums"
+              },
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: [
+                  "\u4ECA\u65E5 ",
+                  state.viewModel.usageOverview.data?.coverage === "unavailable" ? "\u2014" : state.viewModel.usageOverview.data?.total.label ?? "\u540C\u6B65\u4E2D"
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: [
+                  "Token ",
+                  state.viewModel.usageOverview.data ? formatTokenCount(state.viewModel.usageOverview.data.totalTokens) : "\u2014"
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: state.viewModel.balance.supported ? `\u4F59\u989D ${state.viewModel.balance.total?.label ?? "\u4E0D\u53EF\u7528"}` : state.viewModel.balance.status === "unavailable" ? "\u4F59\u989D\u672A\u63A5\u5165" : "\u540C\u6B65\u4E2D" })
+              ]
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
             "div",
             {
               style: {
@@ -2189,8 +2609,8 @@ function CompactMeter({
                 paddingBottom: 4
               },
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: 5 }, children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: 5 }, children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                     "span",
                     {
                       style: {
@@ -2204,9 +2624,9 @@ function CompactMeter({
                       }
                     }
                   ),
-                  /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { style: { fontSize: 11, fontWeight: 700, letterSpacing: "-0.01em", opacity: 0.9 }, children: "Token\u8BA1\u8D39" })
+                  /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { fontSize: 11, fontWeight: 700, letterSpacing: "-0.01em", opacity: 0.9 }, children: "Token\u8BA1\u8D39" })
                 ] }),
-                isBilling ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+                isBilling ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
                   "span",
                   {
                     style: {
@@ -2224,7 +2644,7 @@ function CompactMeter({
                       inProgressLabel
                     ]
                   }
-                ) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                ) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                   "span",
                   {
                     style: {
@@ -2239,7 +2659,7 @@ function CompactMeter({
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
             "div",
             {
               style: {
@@ -2251,7 +2671,7 @@ function CompactMeter({
                 fontVariantNumeric: "tabular-nums"
               },
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
                   "div",
                   {
                     style: {
@@ -2266,15 +2686,15 @@ function CompactMeter({
                       fontWeight: 600
                     },
                     children: [
-                      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { style: { display: "inline-flex", gap: 3 }, children: [
-                        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { opacity: 0.85 }, children: "\u7F13:" }),
-                        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: cacheTokens })
+                      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { display: "inline-flex", gap: 3 }, children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { opacity: 0.85 }, children: "\u7F13:" }),
+                        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: cacheTokens })
                       ] }),
-                      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontWeight: 700 }, children: cacheCost })
+                      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontWeight: 700 }, children: cacheCost })
                     ]
                   }
                 ),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
                   "div",
                   {
                     style: {
@@ -2289,15 +2709,15 @@ function CompactMeter({
                       fontWeight: 600
                     },
                     children: [
-                      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { style: { display: "inline-flex", gap: 3 }, children: [
-                        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { opacity: 0.85 }, children: "\u5165:" }),
-                        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: inputTokens })
+                      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { display: "inline-flex", gap: 3 }, children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { opacity: 0.85 }, children: "\u5165:" }),
+                        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: inputTokens })
                       ] }),
-                      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontWeight: 700 }, children: inputCost })
+                      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontWeight: 700 }, children: inputCost })
                     ]
                   }
                 ),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
                   "div",
                   {
                     style: {
@@ -2312,11 +2732,11 @@ function CompactMeter({
                       fontWeight: 600
                     },
                     children: [
-                      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { style: { display: "inline-flex", gap: 3 }, children: [
-                        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { opacity: 0.85 }, children: "\u51FA:" }),
-                        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: outputTokens })
+                      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { display: "inline-flex", gap: 3 }, children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { opacity: 0.85 }, children: "\u51FA:" }),
+                        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: outputTokens })
                       ] }),
-                      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontWeight: 700 }, children: outputCost })
+                      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontWeight: 700 }, children: outputCost })
                     ]
                   }
                 )
@@ -2326,7 +2746,7 @@ function CompactMeter({
         ]
       }
     ),
-    showReceipt ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+    showReceipt ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
       "div",
       {
         "data-testid": "mymeter-receipt",
@@ -2349,7 +2769,7 @@ function CompactMeter({
           clipPath: "polygon(0% 0%, 100% 0%, 100% calc(100% - 3px), 94% 100%, 88% calc(100% - 3px), 82% 100%, 76% calc(100% - 3px), 70% 100%, 64% calc(100% - 3px), 58% 100%, 52% calc(100% - 3px), 46% 100%, 40% calc(100% - 3px), 34% 100%, 28% calc(100% - 3px), 22% 100%, 16% calc(100% - 3px), 10% 100%, 4% calc(100% - 3px), 0% 100%)"
         },
         children: [
-          isBilling ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+          isBilling ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
             "div",
             {
               style: {
@@ -2364,7 +2784,7 @@ function CompactMeter({
               }
             }
           ) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
             "div",
             {
               style: {
@@ -2377,12 +2797,12 @@ function CompactMeter({
                 fontSize: 8.5
               },
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontWeight: 800, letterSpacing: "0.04em", color: isBilling ? "var(--dsw-alias-brand-primary, #3964fe)" : "var(--dsw-alias-state-success-primary, #16a34a)" }, children: receiptStatusLabel }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontSize: 8, color: "var(--dsw-alias-label-secondary, #6b7280)" }, children: turns ? `\u5171 ${turns.length} \u8F6E` : "\u7B2C 1 \u8F6E" })
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontWeight: 800, letterSpacing: "0.04em", color: isBilling ? "var(--dsw-alias-brand-primary, #3964fe)" : "var(--dsw-alias-state-success-primary, #16a34a)" }, children: receiptStatusLabel }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontSize: 8, color: "var(--dsw-alias-label-secondary, #6b7280)" }, children: turns ? `\u5171 ${turns.length} \u8F6E` : "\u7B2C 1 \u8F6E" })
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
             "div",
             {
               style: {
@@ -2394,7 +2814,7 @@ function CompactMeter({
                 overflowY: "auto"
               },
               children: [
-                hiddenTurnCount > 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+                hiddenTurnCount > 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
                   "button",
                   {
                     type: "button",
@@ -2424,15 +2844,15 @@ function CompactMeter({
                       cursor: "pointer"
                     },
                     children: [
-                      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: receiptTurnsExpanded ? `\u9690\u85CF\u524D ${hiddenTurnCount} \u8F6E\u8D39\u7528` : `\u5C55\u5F00\u524D ${hiddenTurnCount} \u8F6E\u8D39\u7528` }),
-                      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { "aria-hidden": "true", children: receiptTurnsExpanded ? "\u25B4" : "\u25BE" })
+                      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: receiptTurnsExpanded ? `\u9690\u85CF\u524D ${hiddenTurnCount} \u8F6E\u8D39\u7528` : `\u5C55\u5F00\u524D ${hiddenTurnCount} \u8F6E\u8D39\u7528` }),
+                      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { "aria-hidden": "true", children: receiptTurnsExpanded ? "\u25B4" : "\u25BE" })
                     ]
                   }
                 ) : null,
                 turns && turns.length > 0 ? turns.slice(visibleTurnStartIndex).map((turn, visibleIndex) => {
                   const index = visibleTurnStartIndex + visibleIndex;
                   const isActive = turn.completedAt === null && (turn.status === "billing" || isBilling && index === turns.length - 1);
-                  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+                  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
                     "div",
                     {
                       style: {
@@ -2445,8 +2865,8 @@ function CompactMeter({
                         fontWeight: isActive ? 700 : 500
                       },
                       children: [
-                        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { style: { display: "inline-flex", alignItems: "center", gap: 3 }, children: [
-                          isActive ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { display: "inline-flex", alignItems: "center", gap: 3 }, children: [
+                          isActive ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                             "span",
                             {
                               style: {
@@ -2457,20 +2877,20 @@ function CompactMeter({
                                 animation: "printHeadPulse 1s infinite ease-in-out"
                               }
                             }
-                          ) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { width: 3.5, height: 3.5, borderRadius: "50%", background: "var(--dsw-alias-label-tertiary, #9ca3af)" } }),
-                          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { children: [
+                          ) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { width: 3.5, height: 3.5, borderRadius: "50%", background: "var(--dsw-alias-label-tertiary, #9ca3af)" } }),
+                          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { children: [
                             "#",
                             index + 1,
                             " \u8F6E",
                             isActive ? ` (${inProgressLabel})` : ""
                           ] })
                         ] }),
-                        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { color: isActive ? "var(--dsw-alias-state-error-primary, #dc2626)" : "var(--dsw-alias-label-primary, #111827)", fontWeight: 700 }, children: isActive && currentRequest.microCny > 0 ? currentRequest.label : turn.amount.label })
+                        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { color: isActive ? "var(--dsw-alias-state-error-primary, #dc2626)" : "var(--dsw-alias-label-primary, #111827)", fontWeight: 700 }, children: isActive && currentRequest.microCny > 0 ? currentRequest.label : turn.amount.label })
                       ]
                     },
                     turn.id || index
                   );
-                }) : /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+                }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
                   "div",
                   {
                     style: {
@@ -2483,8 +2903,8 @@ function CompactMeter({
                       fontWeight: 700
                     },
                     children: [
-                      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { style: { display: "inline-flex", alignItems: "center", gap: 3 }, children: [
-                        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { display: "inline-flex", alignItems: "center", gap: 3 }, children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                           "span",
                           {
                             style: {
@@ -2496,20 +2916,20 @@ function CompactMeter({
                             }
                           }
                         ),
-                        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { children: [
                           "#1 \u8F6E (",
                           inProgressLabel,
                           ")"
                         ] })
                       ] }),
-                      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { color: "var(--dsw-alias-state-error-primary, #dc2626)", fontWeight: 700 }, children: currentRequest.label })
+                      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { color: "var(--dsw-alias-state-error-primary, #dc2626)", fontWeight: 700 }, children: currentRequest.label })
                     ]
                   }
                 )
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
             "div",
             {
               style: {
@@ -2523,8 +2943,8 @@ function CompactMeter({
                 fontVariantNumeric: "tabular-nums"
               },
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontWeight: 600 }, children: "\u5408\u8BA1\u652F\u51FA" }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontWeight: 800, color: "var(--dsw-alias-label-primary, #111827)" }, children: sessionTotal.label })
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontWeight: 600 }, children: "\u5408\u8BA1\u652F\u51FA" }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontWeight: 800, color: "var(--dsw-alias-label-primary, #111827)" }, children: sessionTotal.label })
               ]
             }
           )
@@ -2533,28 +2953,479 @@ function CompactMeter({
     ) : null
   ] });
 }
+function GlobalSessionList({
+  store,
+  showViewTabs = true
+}) {
+  const state = useMyMeterStoreState(store);
+  const hasGlobalMixedCurrency = state.viewModel.currencyTotals.length > 1;
+  const sessions = (0, import_react4.useMemo)(() => {
+    const query = state.ui.searchQuery.trim().toLowerCase();
+    const filtered = state.viewModel.sessions.filter((session) => {
+      const matchesQuery = !query || [session.title, session.id, session.model, session.agentPreset].some(
+        (value) => value.toLowerCase().includes(query)
+      );
+      const matchesStatus = state.ui.filterStatus === "all" || session.status === state.ui.filterStatus;
+      return matchesQuery && matchesStatus;
+    });
+    return filtered.sort((a, b) => {
+      if (state.ui.sortBy === "amount") {
+        return b.sessionTotal.microCny - a.sessionTotal.microCny;
+      }
+      if (state.ui.sortBy === "status") {
+        return statusPriority(b.status) - statusPriority(a.status);
+      }
+      return b.lastActivityAt.localeCompare(a.lastActivityAt);
+    });
+  }, [state.ui.filterStatus, state.ui.searchQuery, state.ui.sortBy, state.viewModel.sessions]);
+  const activePanel = state.ui.activePanel === "costTree" || state.ui.activePanel === "analytics" ? state.ui.activePanel : "sessions";
+  (0, import_react4.useEffect)(() => {
+    if (activePanel === "costTree" && state.viewModel.sessionCostTree.status === "idle") {
+      void store.loadSessionCostTree();
+    }
+    if (activePanel === "analytics") {
+      if (state.viewModel.costAnalytics.status === "idle") void store.loadCostAnalytics();
+      if (state.viewModel.usageOverview.status === "idle") void store.loadUsageOverview(state.ui.analyticsRange);
+    }
+  }, [
+    activePanel,
+    state.ui.analyticsRange,
+    state.viewModel.costAnalytics.status,
+    state.viewModel.sessionCostTree.status,
+    state.viewModel.usageOverview.status,
+    store
+  ]);
+  if (state.remote.connection.status === "loading") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { style: { margin: 0, padding: 12, color: DSH_COLORS4.secondary, fontSize: 13 }, children: "\u52A0\u8F7D\u4F1A\u8BDD\u4E2D..." });
+  }
+  if (state.remote.connection.status === "error") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { role: "alert", style: { margin: 0, padding: 12, color: "var(--dsw-alias-state-error-primary, #dc2626)", fontSize: 13 }, children: state.remote.connection.message ?? "Remote \u8FDE\u63A5\u5931\u8D25" });
+  }
+  const controlStyle = {
+    padding: "6px 10px",
+    background: DSH_COLORS4.layer1,
+    border: `1px solid ${DSH_COLORS4.border1}`,
+    borderRadius: 6,
+    color: DSH_COLORS4.primary,
+    fontSize: 12,
+    outline: "none"
+  };
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { "aria-label": "\u5168\u5C40\u4F1A\u8BDD\u5217\u8868", style: { display: "grid", gap: 10 }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+      "header",
+      {
+        style: {
+          display: "grid",
+          gap: 6,
+          padding: "8px 12px",
+          background: DSH_COLORS4.layer1,
+          borderRadius: 8,
+          border: `1px solid ${DSH_COLORS4.border1}`
+        },
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { fontSize: 14, fontWeight: 700, letterSpacing: "-0.01em" }, children: "Token\u8BA1\u8D39" }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontSize: 10, color: DSH_COLORS4.brand, fontWeight: 600 }, children: "\u4F1A\u8BDD\u6982\u89C8" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { fontSize: 11, color: DSH_COLORS4.secondary, fontVariantNumeric: "tabular-nums" }, children: [
+            state.viewModel.balance.supported && state.viewModel.balance.provider !== "unknown" ? `${state.viewModel.balance.providerName}\u4F59\u989D ${state.viewModel.balance.total?.label ?? "\u4E0D\u53EF\u7528"} \xB7 ` : "",
+            "DSH\u672C\u5730\u7D2F\u8BA1 ",
+            hasGlobalMixedCurrency ? state.viewModel.cnyEquivalent?.label ?? "\u591A\u5E01\u79CD\uFF08\u5F85\u67E5\u8BE2\u6C47\u7387\uFF09" : state.viewModel.localTotal.label,
+            hasGlobalMixedCurrency ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+              "button",
+              {
+                type: "button",
+                onClick: () => {
+                  void store.refreshExchangeRate();
+                },
+                disabled: state.viewModel.exchangeRate.status === "loading",
+                style: { marginLeft: 6, padding: "1px 5px", borderRadius: 4, border: `1px solid ${DSH_COLORS4.border1}`, background: DSH_COLORS4.base, color: DSH_COLORS4.brand, fontSize: 9, cursor: "pointer" },
+                children: state.viewModel.exchangeRate.status === "loading" ? "\u67E5\u8BE2\u4E2D" : "\u67E5\u8BE2\u6C47\u7387"
+              }
+            ) : null,
+            state.viewModel.balance.supported ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+              "button",
+              {
+                type: "button",
+                "aria-label": "\u5237\u65B0\u4F59\u989D",
+                title: "\u5237\u65B0\u4F59\u989D",
+                onClick: () => {
+                  void store.refreshBalance();
+                },
+                style: { marginLeft: 6, padding: "1px 5px", borderRadius: 4, border: `1px solid ${DSH_COLORS4.border1}`, background: DSH_COLORS4.base, color: DSH_COLORS4.brand, fontSize: 9, cursor: "pointer" },
+                children: "\u5237\u65B0"
+              }
+            ) : null
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+            BillingInsightsStrip,
+            {
+              ariaLabel: "\u5168\u5C40\u8D39\u7528\u6D1E\u5BDF",
+              insights: state.viewModel.insights,
+              showCacheSavings: false
+            }
+          )
+        ]
+      }
+    ),
+    showViewTabs ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(BillingViewTabs, { store, state, activePanel }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(LedgerExportToolbar, { store, state }),
+    activePanel === "costTree" ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(SessionCostTreePanel, { store, state }) : activePanel === "analytics" ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CostAnalyticsPanel, { store, state }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_jsx_runtime5.Fragment, { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto auto", gap: 6 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+          "input",
+          {
+            "aria-label": "\u641C\u7D22\u4F1A\u8BDD",
+            value: state.ui.searchQuery,
+            placeholder: "\u641C\u7D22\u4F1A\u8BDD",
+            onChange: (event) => store.setSearchQuery(event.target.value),
+            style: controlStyle
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+          "select",
+          {
+            "aria-label": "\u6392\u5E8F",
+            value: state.ui.sortBy,
+            onChange: (event) => store.setSortBy(event.target.value),
+            style: controlStyle,
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: "recent", children: "\u6700\u8FD1" }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: "amount", children: "\u91D1\u989D" }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: "status", children: "\u72B6\u6001" })
+            ]
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+          "select",
+          {
+            "aria-label": "\u7B5B\u9009\u72B6\u6001",
+            value: state.ui.filterStatus,
+            onChange: (event) => store.setFilterStatus(event.target.value),
+            style: controlStyle,
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: "all", children: "\u5168\u90E8" }),
+              STATUS_FILTER_OPTIONS.map((status) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: status, children: formatStatusLabel(status) }, status))
+            ]
+          }
+        )
+      ] }),
+      sessions.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { style: { margin: 0, padding: "16px 8px", textAlign: "center", color: DSH_COLORS4.secondary, fontSize: 12 }, children: "\u6682\u65E0\u5339\u914D\u4F1A\u8BDD\u3002" }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: { display: "grid", gap: 6, maxHeight: 320, overflowY: "auto", paddingRight: 2 }, children: sessions.map((session) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+        "button",
+        {
+          type: "button",
+          onClick: () => store.selectSession(session.id),
+          style: {
+            display: "grid",
+            gap: 4,
+            textAlign: "left",
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: session.isActive ? `1px solid ${DSH_COLORS4.brand}` : `1px solid ${DSH_COLORS4.border1}`,
+            background: session.isActive ? DSH_COLORS4.layer2 : DSH_COLORS4.layer1,
+            boxShadow: "none",
+            cursor: "pointer",
+            color: DSH_COLORS4.primary,
+            transition: "all 0.15s ease"
+          },
+          children: [
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { fontSize: 13, fontWeight: 600 }, children: session.title }),
+              session.isActive ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+                "span",
+                {
+                  style: {
+                    fontSize: 9,
+                    padding: "1px 6px",
+                    background: DSH_COLORS4.layer2,
+                    border: `1px solid ${DSH_COLORS4.border1}`,
+                    borderRadius: 4,
+                    color: DSH_COLORS4.brand,
+                    fontWeight: 700
+                  },
+                  children: "ACTIVE"
+                }
+              ) : null
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { fontSize: 11, color: DSH_COLORS4.secondary }, children: [
+              session.model,
+              " \xB7 ",
+              session.reasoningEffort,
+              " \xB7 ",
+              session.agentPreset
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { fontSize: 11, color: DSH_COLORS4.primary, fontVariantNumeric: "tabular-nums" }, children: [
+              formatStatusLabel(session.status),
+              session.status === "billing" ? ` ${session.currentRequest.label}` : "",
+              " \xB7 \u4F1A\u8BDD\u7D2F\u8BA1",
+              " ",
+              session.sessionTotal.label
+            ] })
+          ]
+        },
+        session.id
+      )) })
+    ] })
+  ] });
+}
+function BillingViewTabs({
+  store,
+  state,
+  activePanel,
+  includeCurrentSession = false
+}) {
+  const panels = includeCurrentSession ? [
+    ["detail", "\u5F53\u524D\u4F1A\u8BDD"],
+    ["sessions", "\u5168\u90E8\u4F1A\u8BDD"],
+    ["costTree", "\u8D39\u7528\u6811"],
+    ["analytics", "\u8D8B\u52BF/\u5F02\u5E38"]
+  ] : [
+    ["sessions", "\u4F1A\u8BDD"],
+    ["costTree", "\u8D39\u7528\u6811"],
+    ["analytics", "\u8D8B\u52BF/\u5F02\u5E38"]
+  ];
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { role: "tablist", "aria-label": "\u8D39\u7528\u89C6\u56FE", style: { display: "flex", gap: 4, overflowX: "auto", touchAction: "pan-x" }, children: panels.map(([panel, label]) => {
+    const unavailable = panel === "costTree" ? state.viewModel.sessionCostTree.status === "unavailable" : panel === "analytics" ? state.viewModel.costAnalytics.status === "unavailable" && state.viewModel.usageOverview.status === "unavailable" : false;
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+      "button",
+      {
+        type: "button",
+        role: "tab",
+        "aria-selected": activePanel === panel,
+        disabled: unavailable,
+        onClick: () => store.setActivePanel(panel),
+        style: {
+          minHeight: 28,
+          padding: "4px 10px",
+          borderRadius: 6,
+          border: activePanel === panel ? `1px solid ${DSH_COLORS4.brand}` : `1px solid ${DSH_COLORS4.border1}`,
+          background: activePanel === panel ? DSH_COLORS4.layer2 : DSH_COLORS4.layer1,
+          color: activePanel === panel ? DSH_COLORS4.brand : DSH_COLORS4.secondary,
+          fontSize: 12,
+          fontWeight: 700,
+          whiteSpace: "nowrap",
+          cursor: unavailable ? "not-allowed" : "pointer",
+          opacity: unavailable ? 0.55 : 1
+        },
+        children: label
+      },
+      panel
+    );
+  }) });
+}
+function LedgerExportToolbar({ store, state }) {
+  const exportState = state.viewModel.ledgerExport;
+  const unavailable = exportState.status === "unavailable";
+  const isLoading = exportState.status === "loading";
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { "aria-label": "\u8D26\u672C\u5BFC\u51FA", style: { display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }, children: [
+    ["json", "csv"].map((format) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+      "button",
+      {
+        type: "button",
+        "aria-label": `\u4E0B\u8F7D${format.toUpperCase()}\u8D26\u672C`,
+        disabled: unavailable || isLoading,
+        onClick: () => {
+          void store.exportLedger(format);
+        },
+        style: {
+          minHeight: 28,
+          padding: "4px 9px",
+          borderRadius: 6,
+          border: `1px solid ${DSH_COLORS4.border1}`,
+          background: DSH_COLORS4.layer1,
+          color: unavailable ? DSH_COLORS4.tertiary : DSH_COLORS4.brand,
+          fontSize: 11,
+          fontWeight: 700,
+          cursor: unavailable || isLoading ? "not-allowed" : "pointer"
+        },
+        children: [
+          "\u2193 ",
+          format.toUpperCase()
+        ]
+      },
+      format
+    )),
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { role: exportState.status === "error" ? "alert" : void 0, style: { color: exportState.status === "error" ? TOKEN_DETAIL_COLORS.anomaly : DSH_COLORS4.tertiary, fontSize: 10 }, children: exportState.status === "unavailable" ? "\u5F53\u524D dsh \u7248\u672C\u4E0D\u652F\u6301\u5BFC\u51FA" : exportState.status === "loading" ? `\u6B63\u5728\u751F\u6210 ${exportState.format?.toUpperCase() ?? ""}` : exportState.status === "ready" ? `${exportState.format?.toUpperCase()} \u5DF2\u4E0B\u8F7D` : exportState.status === "error" ? exportState.error ?? "\u5BFC\u51FA\u5931\u8D25" : "\u5BFC\u51FA\u4E0D\u5305\u542B\u63D0\u793A\u8BCD\u3001\u56DE\u590D\u6B63\u6587\u548C API Key" })
+  ] });
+}
+function SessionCostTreePanel({ store, state }) {
+  const resource = state.viewModel.sessionCostTree;
+  if (resource.status === "unavailable") return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EmptyToolState, { label: "\u5F53\u524D dsh \u7248\u672C\u4E0D\u652F\u6301\u8D39\u7528\u6811\u3002" });
+  if (resource.status === "loading") return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EmptyToolState, { label: "\u6B63\u5728\u52A0\u8F7D\u8D39\u7528\u6811..." });
+  if (resource.status === "error") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ToolErrorState, { label: resource.error ?? "\u8D39\u7528\u6811\u52A0\u8F7D\u5931\u8D25", onRetry: () => {
+      void store.loadSessionCostTree();
+    } });
+  }
+  if (resource.status === "idle") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ToolRetryState, { label: "\u52A0\u8F7D\u8D39\u7528\u6811", onClick: () => {
+      void store.loadSessionCostTree();
+    } });
+  }
+  const tree = resource.data;
+  if (!tree) return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EmptyToolState, { label: "\u6682\u65E0\u5B50 Agent \u8D39\u7528\u5173\u7CFB\u3002" });
+  const roots = tree.roots.filter((node) => node.children.length > 0 || node.anomalyLabels.length > 0);
+  if (roots.length === 0) return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EmptyToolState, { label: "\u6682\u65E0\u5B50 Agent \u8D39\u7528\u5173\u7CFB\u3002\u666E\u901A\u4F1A\u8BDD\u8BF7\u5728\u4F1A\u8BDD\u5217\u8868\u4E2D\u67E5\u770B\u3002" });
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { "aria-label": "\u8D39\u7528\u6811", style: { display: "grid", gap: 8 }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { fontSize: 11, color: DSH_COLORS4.secondary }, children: [
+      roots.length,
+      " \u4E2A\u5B50 Agent \u4EFB\u52A1\u6811"
+    ] }),
+    tree.anomalyLabels.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { role: "alert", style: { margin: 0, color: TOKEN_DETAIL_COLORS.anomaly, fontSize: 11 }, children: tree.anomalyLabels.join("\uFF1B") }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("ol", { style: { display: "grid", gap: 4, margin: 0, padding: 0, listStyle: "none" }, children: roots.map((node) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(SessionCostTreeNodeRow, { node }, node.id)) })
+  ] });
+}
+function SessionCostTreeNodeRow({ node }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("li", { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+      "div",
+      {
+        style: {
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) auto",
+          gap: 8,
+          padding: "6px 8px",
+          marginLeft: Math.min(node.depth * 12, 48),
+          background: DSH_COLORS4.layer1,
+          border: `1px solid ${node.anomalyLabels.length > 0 ? "color-mix(in srgb, var(--dsw-alias-state-error-primary, #dc2626) 45%, transparent)" : DSH_COLORS4.border1}`,
+          borderRadius: 6,
+          fontSize: 11,
+          minWidth: 0
+        },
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { minWidth: 0, overflowWrap: "anywhere", color: DSH_COLORS4.primary }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: node.title }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { color: DSH_COLORS4.tertiary }, children: [
+              " \xB7 ",
+              node.id
+            ] }),
+            node.anomalyLabels.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { color: TOKEN_DETAIL_COLORS.anomaly }, children: [
+              " \xB7 ",
+              node.anomalyLabels.join("/")
+            ] }) : null
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { textAlign: "right", color: DSH_COLORS4.secondary, fontVariantNumeric: "tabular-nums" }, children: node.children.length > 0 ? `\u81EA\u8EAB ${node.total.label} \xB7 \u542B\u5B50 Agent ${node.subtreeTotal.label}` : `\u8D39\u7528 ${node.total.label}` })
+        ]
+      }
+    ),
+    node.children.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("ol", { style: { display: "grid", gap: 4, margin: "4px 0 0", padding: 0, listStyle: "none" }, children: node.children.map((child) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(SessionCostTreeNodeRow, { node: child }, child.id)) }) : null
+  ] });
+}
+function CostAnalyticsPanel({ store, state }) {
+  const resource = state.viewModel.costAnalytics;
+  const overviewResource = state.viewModel.usageOverview;
+  if (overviewResource.status === "unavailable" && resource.status === "unavailable") return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EmptyToolState, { label: "\u5F53\u524D dsh \u7248\u672C\u4E0D\u652F\u6301\u8D8B\u52BF\u5206\u6790\u3002" });
+  if (overviewResource.status === "loading" && !overviewResource.data) return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EmptyToolState, { label: "\u6B63\u5728\u52A0\u8F7D\u8D8B\u52BF\u5206\u6790..." });
+  if (overviewResource.status === "error" && !overviewResource.data && resource.status !== "ready") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ToolErrorState, { label: "\u7528\u91CF\u6982\u89C8\u52A0\u8F7D\u5931\u8D25", onRetry: () => {
+      void store.loadUsageOverview(state.ui.analyticsRange);
+    } });
+  }
+  if (resource.status === "error") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ToolErrorState, { label: resource.error ?? "\u8D8B\u52BF\u5206\u6790\u52A0\u8F7D\u5931\u8D25", onRetry: () => {
+      void store.loadCostAnalytics();
+    } });
+  }
+  if (resource.status === "idle" && !overviewResource.data) {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ToolRetryState, { label: "\u52A0\u8F7D\u8D8B\u52BF/\u5F02\u5E38", onClick: () => {
+      void store.loadCostAnalytics();
+      void store.loadUsageOverview(state.ui.analyticsRange);
+    } });
+  }
+  const analytics = resource.data;
+  const overview = overviewResource.data;
+  if (!overview && (!analytics || analytics.dailyTrend.length === 0 && analytics.hourlyTrend.length === 0 && analytics.anomalies.length === 0)) {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EmptyToolState, { label: "\u6682\u65E0\u8D8B\u52BF\u6570\u636E\u3002" });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CostAnalyticsReportView, { store, state, overview, analytics });
+}
+function CostAnalyticsReportView({
+  store,
+  state,
+  overview,
+  analytics
+}) {
+  const range = state.ui.analyticsRange;
+  const rangeOptions = [
+    ["today", "\u4ECA\u65E5"],
+    ["7d", "7\u5929"],
+    ["30d", "30\u5929"]
+  ];
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { "aria-label": "\u8D8B\u52BF\u548C\u5F02\u5E38", style: { display: "grid", gap: 8 }, children: [
+    state.viewModel.usageOverview.status === "error" && overview ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { role: "status", style: { margin: 0, color: DSH_COLORS4.secondary, fontSize: 10 }, children: "\u7528\u91CF\u6982\u89C8\u6682\u65F6\u4E0D\u53EF\u7528\uFF0C\u663E\u793A\u6700\u8FD1\u4E00\u6B21\u540C\u6B65\u7ED3\u679C\u3002" }) : null,
+    overview ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(UsageOverview, { overview }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { fontSize: 11, color: DSH_COLORS4.primary }, children: "\u8D39\u7528\u8D8B\u52BF" }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { role: "group", "aria-label": "\u8D8B\u52BF\u8303\u56F4", style: { display: "inline-flex", padding: 2, border: `1px solid ${DSH_COLORS4.border1}`, borderRadius: 6, background: DSH_COLORS4.layer1 }, children: rangeOptions.map(([value, label]) => {
+        const selected = range === value;
+        return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+          "button",
+          {
+            type: "button",
+            "aria-pressed": selected,
+            onClick: () => store.setAnalyticsRange(value),
+            style: {
+              minHeight: 24,
+              padding: "2px 8px",
+              border: 0,
+              borderRadius: 4,
+              background: selected ? DSH_COLORS4.layer2 : "transparent",
+              color: selected ? DSH_COLORS4.brand : DSH_COLORS4.secondary,
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer"
+            },
+            children: label
+          },
+          value
+        );
+      }) })
+    ] }),
+    overview ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(AnalyticsChart, { range, trend: overview.trend }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "grid", gap: 4 }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { fontSize: 11, color: DSH_COLORS4.primary }, children: "\u5F02\u5E38" }),
+      !analytics || analytics.anomalies.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { color: DSH_COLORS4.tertiary, fontSize: 11 }, children: "\u6682\u65E0\u5F02\u5E38\u3002" }) : analytics.anomalies.map((anomaly) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { padding: "6px 8px", border: `1px solid ${anomaly.severity === "warning" ? "color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d97706) 45%, transparent)" : DSH_COLORS4.border1}`, borderRadius: 6, background: DSH_COLORS4.layer1, color: DSH_COLORS4.secondary, fontSize: 11 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { color: anomaly.severity === "warning" ? "var(--dsw-alias-state-warn-primary, #b45309)" : DSH_COLORS4.brand }, children: anomaly.bucketKey }),
+        " \xB7 ",
+        anomaly.explanation
+      ] }, `${anomaly.ruleId}:${anomaly.bucketKey}`))
+    ] })
+  ] });
+}
+function EmptyToolState({ label }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { style: { margin: 0, padding: "16px 8px", textAlign: "center", color: DSH_COLORS4.secondary, fontSize: 12 }, children: label });
+}
+function ToolRetryState({ label, onClick }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", onClick, style: { padding: "7px 10px", borderRadius: 6, border: `1px solid ${DSH_COLORS4.border1}`, background: DSH_COLORS4.layer1, color: DSH_COLORS4.brand, fontSize: 12, fontWeight: 700, cursor: "pointer" }, children: label });
+}
+function ToolErrorState({ label, onRetry }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { role: "alert", style: { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", padding: "8px 10px", border: `1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary, #dc2626) 45%, transparent)`, borderRadius: 6, background: DSH_COLORS4.layer1, color: TOKEN_DETAIL_COLORS.anomaly, fontSize: 12 }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: label }),
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", onClick: onRetry, style: { padding: "3px 8px", borderRadius: 5, border: `1px solid ${DSH_COLORS4.border1}`, background: DSH_COLORS4.base, color: DSH_COLORS4.brand, fontSize: 11, fontWeight: 700, cursor: "pointer" }, children: "\u91CD\u8BD5" })
+  ] });
+}
 function SessionDetailPanel({ store, showNavigation = true }) {
   const state = useMyMeterStoreState(store);
   const detail = state.viewModel.detail;
   const backBtnStyle = {
     padding: "3px 8px",
-    background: DSH_COLORS2.layer2,
-    border: `1px solid ${DSH_COLORS2.border1}`,
+    background: DSH_COLORS4.layer2,
+    border: `1px solid ${DSH_COLORS4.border1}`,
     borderRadius: 6,
-    color: DSH_COLORS2.primary,
+    color: DSH_COLORS4.primary,
     fontSize: 11,
     fontWeight: 600,
     cursor: "pointer"
   };
   if (!detail) {
-    return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
       "section",
       {
         "aria-label": "\u4F1A\u8BDD\u8BE6\u60C5",
-        style: { display: "grid", gap: 10, padding: 4, color: DSH_COLORS2.primary, background: DSH_COLORS2.base },
+        style: { display: "grid", gap: 10, padding: 4, color: DSH_COLORS4.primary, background: DSH_COLORS4.base },
         children: [
-          showNavigation ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => store.selectSession(null), style: backBtnStyle, children: "\u5168\u90E8\u4F1A\u8BDD" }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { style: { margin: 0, color: DSH_COLORS2.tertiary, fontSize: 12 }, children: "\u8BF7\u9009\u62E9\u4E00\u4E2A\u4F1A\u8BDD\u3002" })
+          showNavigation ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", onClick: () => store.selectSession(null), style: backBtnStyle, children: "\u5168\u90E8\u4F1A\u8BDD" }) : null,
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { style: { margin: 0, color: DSH_COLORS4.tertiary, fontSize: 12 }, children: "\u8BF7\u9009\u62E9\u4E00\u4E2A\u4F1A\u8BDD\u3002" })
         ]
       }
     );
@@ -2564,33 +3435,33 @@ function SessionDetailPanel({ store, showNavigation = true }) {
   const currencyTotals = detail.currencyTotals ?? [];
   const isMixedCurrency = currencyTotals.length > 1;
   const nativeSessionTotalLabel = currencyTotals.length === 1 ? formatUnknownTotalLabel(currencyTotals[0].amount.label, currencyTotals[0].amount.microCny, sessionHasUnknownCost) : isMixedCurrency ? "\u591A\u5E01\u79CD" : sessionTotalLabel;
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
     "section",
     {
       "aria-label": "\u4F1A\u8BDD\u8BE6\u60C5",
-      style: { display: "grid", gap: 10, color: DSH_COLORS2.primary, background: DSH_COLORS2.base },
+      style: { display: "grid", gap: 10, color: DSH_COLORS4.primary, background: DSH_COLORS4.base },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("header", { style: { display: "grid", gap: 6 }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }, children: [
-            showNavigation ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", onClick: () => store.selectSession(null), style: backBtnStyle, children: "\u5168\u90E8\u4F1A\u8BDD" }) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { "aria-hidden": "true", style: { width: 1 } }),
-            state.viewModel.status.code === "failed" ? null : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("header", { style: { display: "grid", gap: 6 }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }, children: [
+            showNavigation ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { type: "button", onClick: () => store.selectSession(null), style: backBtnStyle, children: "\u5168\u90E8\u4F1A\u8BDD" }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { "aria-hidden": "true", style: { width: 1 } }),
+            state.viewModel.status.code === "failed" ? null : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
               "span",
               {
                 style: {
                   fontSize: 10,
                   padding: "2px 8px",
-                  background: `color-mix(in srgb, ${DSH_COLORS2.brand} 15%, transparent)`,
-                  border: `1px solid color-mix(in srgb, ${DSH_COLORS2.brand} 35%, transparent)`,
+                  background: `color-mix(in srgb, ${DSH_COLORS4.brand} 15%, transparent)`,
+                  border: `1px solid color-mix(in srgb, ${DSH_COLORS4.brand} 35%, transparent)`,
                   borderRadius: 999,
-                  color: DSH_COLORS2.brand,
+                  color: DSH_COLORS4.brand,
                   fontWeight: 600
                 },
                 children: state.viewModel.status.label
               }
             )
           ] }),
-          detail.title !== detail.id ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { style: { fontSize: 13, fontWeight: 700, letterSpacing: "-0.01em", textAlign: "left" }, children: detail.title }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+          detail.title !== detail.id ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { fontSize: 13, fontWeight: 700, letterSpacing: "-0.01em", textAlign: "left" }, children: detail.title }) : null,
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
             "div",
             {
               "aria-label": "\u4F1A\u8BDDID",
@@ -2602,15 +3473,15 @@ function SessionDetailPanel({ store, showNavigation = true }) {
                 textAlign: "left"
               },
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { flexShrink: 0, fontSize: 11, fontWeight: 600, color: DSH_COLORS2.secondary }, children: "\u4F1A\u8BDDID" }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { flexShrink: 0, fontSize: 11, fontWeight: 600, color: DSH_COLORS4.secondary }, children: "\u4F1A\u8BDDID" }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                   "code",
                   {
                     style: {
                       minWidth: 0,
                       overflowWrap: "anywhere",
                       fontSize: 11,
-                      color: DSH_COLORS2.secondary,
+                      color: DSH_COLORS4.secondary,
                       fontVariantNumeric: "tabular-nums"
                     },
                     children: detail.id
@@ -2620,20 +3491,20 @@ function SessionDetailPanel({ store, showNavigation = true }) {
             }
           )
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
           "div",
           {
             style: {
               display: "grid",
               gap: 2,
               padding: "10px 12px",
-              background: DSH_COLORS2.layer1,
+              background: DSH_COLORS4.layer1,
               borderRadius: 8,
-              border: `1px solid ${DSH_COLORS2.border2}`
+              border: `1px solid ${DSH_COLORS4.border2}`
             },
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontSize: 10, fontWeight: 700, color: DSH_COLORS2.brand, letterSpacing: "0.05em" }, children: "\u4F1A\u8BDD\u603B\u8D39\u7528" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontSize: 10, fontWeight: 700, color: DSH_COLORS4.brand, letterSpacing: "0.05em" }, children: "\u4F1A\u8BDD\u603B\u8D39\u7528" }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                 "strong",
                 {
                   style: {
@@ -2641,16 +3512,16 @@ function SessionDetailPanel({ store, showNavigation = true }) {
                     fontWeight: 800,
                     fontVariantNumeric: "tabular-nums",
                     letterSpacing: "-0.02em",
-                    color: DSH_COLORS2.primary
+                    color: DSH_COLORS4.primary
                   },
                   children: nativeSessionTotalLabel
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontSize: 11, color: DSH_COLORS2.secondary, fontVariantNumeric: "tabular-nums" }, children: currencyTotals.length === 1 ? `\u5DF2\u7ED3\u7B97 ${currencyTotals[0].settled.label} + \u4F30\u7B97 ${currencyTotals[0].estimated.label}` : `\u5DF2\u7ED3\u7B97 ${detail.settledTotal.label} + \u4F30\u7B97 ${detail.estimatedTotal.label}` })
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontSize: 11, color: DSH_COLORS4.secondary, fontVariantNumeric: "tabular-nums" }, children: currencyTotals.length === 1 ? `\u5DF2\u7ED3\u7B97 ${currencyTotals[0].settled.label} + \u4F30\u7B97 ${currencyTotals[0].estimated.label}` : `\u5DF2\u7ED3\u7B97 ${detail.settledTotal.label} + \u4F30\u7B97 ${detail.estimatedTotal.label}` })
             ]
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
           BillingInsightsStrip,
           {
             ariaLabel: "\u4F1A\u8BDD\u8D39\u7528\u6D1E\u5BDF",
@@ -2658,7 +3529,7 @@ function SessionDetailPanel({ store, showNavigation = true }) {
             showCacheSavings: true
           }
         ),
-        currencyTotals.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+        currencyTotals.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
           CurrencyConversionPanel,
           {
             totals: currencyTotals,
@@ -2669,7 +3540,7 @@ function SessionDetailPanel({ store, showNavigation = true }) {
             }
           }
         ) : null,
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(SessionStageTabs, { detail, children: (stage, isHistorical) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(NativeSessionStagePanel, { stage, isHistorical }) })
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(SessionStageTabs, { detail, children: (stage, isHistorical) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(NativeSessionStagePanel, { stage, isHistorical }) })
       ]
     }
   );
@@ -2679,7 +3550,7 @@ function BillingInsightsStrip({
   insights,
   showCacheSavings
 }) {
-  const budgetTone = insights.budget.level === "danger" ? "var(--dsw-alias-state-error-primary, #dc2626)" : insights.budget.level === "warning" ? "var(--dsw-alias-state-warn-primary, #b45309)" : insights.budget.level === "notice" ? "var(--dsw-alias-state-warn-primary, #b45309)" : insights.budget.level === "unavailable" ? DSH_COLORS2.tertiary : DSH_COLORS2.brand;
+  const budgetTone = insights.budget.level === "danger" ? "var(--dsw-alias-state-error-primary, #dc2626)" : insights.budget.level === "warning" ? "var(--dsw-alias-state-warn-primary, #b45309)" : insights.budget.level === "notice" ? "var(--dsw-alias-state-warn-primary, #b45309)" : insights.budget.level === "unavailable" ? DSH_COLORS4.tertiary : DSH_COLORS4.brand;
   const budgetLabel = insights.budget.level === "danger" ? "\u5DF2\u8D85\u8FC7" : insights.budget.level === "warning" ? "\u63A5\u8FD1" : insights.budget.level === "notice" ? "\u7559\u610F" : insights.budget.level === "unavailable" ? "\u4E0D\u9002\u7528" : insights.budget.level === "off" ? "\u672A\u542F\u7528" : "\u6B63\u5E38";
   const countdown = insights.pricingZoneCountdown;
   const items = [
@@ -2699,10 +3570,10 @@ function BillingInsightsStrip({
       label: "\u5CF0\u8C37",
       value: countdown.currentZoneLabel,
       meta: countdown.remainingLabel && countdown.nextZoneLabel && countdown.transitionTimeLabel ? `${countdown.remainingLabel}\u540E\u8FDB\u5165${countdown.nextZoneLabel}\uFF08${countdown.transitionTimeLabel}\uFF09` : "\u6682\u4E0D\u9002\u7528",
-      color: countdown.currentZone === "peak" ? "var(--dsw-alias-state-warn-primary, #b45309)" : countdown.currentZone === "offpeak" ? "var(--dsw-alias-state-success-primary, #0f766e)" : DSH_COLORS2.tertiary
+      color: countdown.currentZone === "peak" ? "var(--dsw-alias-state-warn-primary, #b45309)" : countdown.currentZone === "offpeak" ? "var(--dsw-alias-state-success-primary, #0f766e)" : DSH_COLORS4.tertiary
     }
   ];
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
     "section",
     {
       "aria-label": ariaLabel,
@@ -2712,13 +3583,13 @@ function BillingInsightsStrip({
         gap: 6,
         minWidth: 0,
         padding: "7px 8px",
-        background: DSH_COLORS2.layer2,
-        border: `1px solid ${DSH_COLORS2.border2}`,
+        background: DSH_COLORS4.layer2,
+        border: `1px solid ${DSH_COLORS4.border2}`,
         borderRadius: 8
       },
-      children: items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "grid", gap: 1, minWidth: 0 }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { color: DSH_COLORS2.tertiary, fontSize: 9, fontWeight: 700 }, children: item.label }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+      children: items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "grid", gap: 1, minWidth: 0 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { color: DSH_COLORS4.tertiary, fontSize: 9, fontWeight: 700 }, children: item.label }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
           "strong",
           {
             style: {
@@ -2732,11 +3603,11 @@ function BillingInsightsStrip({
             children: item.value
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
           "span",
           {
             style: {
-              color: DSH_COLORS2.secondary,
+              color: DSH_COLORS4.secondary,
               fontSize: 9,
               lineHeight: 1.35,
               fontVariantNumeric: "tabular-nums",
@@ -2756,7 +3627,7 @@ function CurrencyConversionPanel({
   onRefresh
 }) {
   const mixed = totals.length > 1;
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
     "section",
     {
       "aria-label": "\u5E01\u79CD\u8D39\u7528",
@@ -2764,14 +3635,14 @@ function CurrencyConversionPanel({
         display: "grid",
         gap: 6,
         padding: "8px 10px",
-        background: DSH_COLORS2.layer2,
-        border: `1px solid ${DSH_COLORS2.border2}`,
+        background: DSH_COLORS4.layer2,
+        border: `1px solid ${DSH_COLORS4.border2}`,
         borderRadius: 8
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { style: { fontSize: 11, color: DSH_COLORS2.primary }, children: "\u539F\u5E01\u8D39\u7528" }),
-          mixed ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { fontSize: 11, color: DSH_COLORS4.primary }, children: "\u539F\u5E01\u8D39\u7528" }),
+          mixed ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
             "button",
             {
               type: "button",
@@ -2780,9 +3651,9 @@ function CurrencyConversionPanel({
               style: {
                 padding: "3px 7px",
                 borderRadius: 5,
-                border: `1px solid ${DSH_COLORS2.border1}`,
-                background: DSH_COLORS2.base,
-                color: DSH_COLORS2.brand,
+                border: `1px solid ${DSH_COLORS4.border1}`,
+                background: DSH_COLORS4.base,
+                color: DSH_COLORS4.brand,
                 fontSize: 10,
                 fontWeight: 700,
                 cursor: exchangeRate.status === "loading" ? "wait" : "pointer"
@@ -2791,16 +3662,16 @@ function CurrencyConversionPanel({
             }
           ) : null
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { style: { display: "grid", gap: 3 }, children: totals.map((total) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11 }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { color: DSH_COLORS2.secondary }, children: total.currency }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { style: { color: DSH_COLORS2.primary, fontVariantNumeric: "tabular-nums" }, children: total.amount.label })
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: { display: "grid", gap: 3 }, children: totals.map((total) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11 }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { color: DSH_COLORS4.secondary }, children: total.currency }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { color: DSH_COLORS4.primary, fontVariantNumeric: "tabular-nums" }, children: total.amount.label })
         ] }, total.currency)) }),
-        mixed ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "grid", gap: 3, borderTop: `1px solid ${DSH_COLORS2.border1}`, paddingTop: 6 }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11 }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { color: DSH_COLORS2.secondary }, children: "\u4EBA\u6C11\u5E01\u6298\u7B97" }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { style: { color: DSH_COLORS2.primary, fontVariantNumeric: "tabular-nums" }, children: cnyEquivalent?.label ?? "\u67E5\u8BE2\u6C47\u7387\u540E\u663E\u793A" })
+        mixed ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "grid", gap: 3, borderTop: `1px solid ${DSH_COLORS4.border1}`, paddingTop: 6 }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { color: DSH_COLORS4.secondary }, children: "\u4EBA\u6C11\u5E01\u6298\u7B97" }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { color: DSH_COLORS4.primary, fontVariantNumeric: "tabular-nums" }, children: cnyEquivalent?.label ?? "\u67E5\u8BE2\u6C47\u7387\u540E\u663E\u793A" })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { color: DSH_COLORS2.tertiary, fontSize: 9 }, children: exchangeRate.status === "fresh" && exchangeRate.rate ? `\u6309 1 USD = \xA5${exchangeRate.rate.toFixed(4)} \xB7 ${exchangeRate.fetchedAt ? formatFxTimestamp(exchangeRate.fetchedAt) : "\u5F53\u5929\u6700\u65B0"}` : exchangeRate.error ?? "\u4EBA\u6C11\u5E01\u6298\u7B97\u4EC5\u7528\u4E8E\u6C47\u603B\u5C55\u793A\uFF0C\u4E0D\u6539\u53D8\u539F\u5E01\u8BA1\u8D39" })
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { color: DSH_COLORS4.tertiary, fontSize: 9 }, children: exchangeRate.status === "fresh" && exchangeRate.rate ? `\u6309 1 USD = \xA5${exchangeRate.rate.toFixed(4)} \xB7 ${exchangeRate.fetchedAt ? formatFxTimestamp(exchangeRate.fetchedAt) : "\u5F53\u5929\u6700\u65B0"}` : exchangeRate.error ?? "\u4EBA\u6C11\u5E01\u6298\u7B97\u4EC5\u7528\u4E8E\u6C47\u603B\u5C55\u793A\uFF0C\u4E0D\u6539\u53D8\u539F\u5E01\u8BA1\u8D39" })
         ] }) : null
       ]
     }
@@ -2819,14 +3690,15 @@ function MyMeterConversationView({
 }) {
   const state = useMyMeterStoreState(store);
   const overlayEnabled = state.settings.overlayEnabled;
-  (0, import_react3.useLayoutEffect)(() => {
+  const activePanel = state.ui.activePanel === "sessions" || state.ui.activePanel === "costTree" || state.ui.activePanel === "analytics" ? state.ui.activePanel : "detail";
+  (0, import_react4.useLayoutEffect)(() => {
     acquireConversationOverlay(store);
     return () => releaseConversationOverlay(store);
   }, [store]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     store.selectSession(sessionId);
   }, [sessionId, store]);
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
     "section",
     {
       "aria-label": "Token\u8BA1\u8D39",
@@ -2840,7 +3712,7 @@ function MyMeterConversationView({
         borderRadius: 8
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
           "div",
           {
             style: {
@@ -2853,10 +3725,10 @@ function MyMeterConversationView({
               borderBottom: "1px solid var(--dsw-alias-border-l2, #e5e7eb)"
             },
             children: [
-              updateController ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(MyMeterUpdateControl, { controller: updateController, isLoopback: showUpdateControl }) : null,
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "inline-flex", alignItems: "center", gap: 8 }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontSize: 12, fontWeight: 600, color: "var(--dsw-alias-label-secondary, #4b5563)" }, children: "\u8BA1\u8D39\u6D6E\u7A97" }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+              updateController ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(MyMeterUpdateControl, { controller: updateController, isLoopback: showUpdateControl }) : null,
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "inline-flex", alignItems: "center", gap: 8 }, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontSize: 12, fontWeight: 600, color: "var(--dsw-alias-label-secondary, #4b5563)" }, children: "\u8BA1\u8D39\u6D6E\u7A97" }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                   "button",
                   {
                     type: "button",
@@ -2876,7 +3748,7 @@ function MyMeterConversationView({
                       cursor: "pointer",
                       transition: state.settings.reducedMotion ? "none" : "background 0.15s ease, border-color 0.15s ease"
                     },
-                    children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                    children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                       "span",
                       {
                         "aria-hidden": "true",
@@ -2900,8 +3772,11 @@ function MyMeterConversationView({
             ]
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(AccountBalancesPanel, { balances: state.viewModel.balances }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { style: { color: DSH_COLORS2.primary, background: DSH_COLORS2.base }, children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(SessionDetailPanel, { store, showNavigation: false }) })
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: { marginBottom: 10 }, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(BillingViewTabs, { store, state, activePanel, includeCurrentSession: true }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: { color: DSH_COLORS4.primary, background: DSH_COLORS4.base }, children: activePanel === "detail" ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_jsx_runtime5.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(AccountBalancesPanel, { balances: state.viewModel.balances }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(SessionDetailPanel, { store, showNavigation: false })
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(GlobalSessionList, { store, showViewTabs: false }) })
       ]
     }
   );
@@ -2909,7 +3784,7 @@ function MyMeterConversationView({
 function AccountBalancesPanel({ balances }) {
   const visibleBalances = balances.filter((balance) => balance.supported);
   if (visibleBalances.length === 0) return null;
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
     "section",
     {
       "aria-label": "\u8D26\u6237\u4F59\u989D",
@@ -2920,8 +3795,8 @@ function AccountBalancesPanel({ balances }) {
         minWidth: 0
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontSize: 11, fontWeight: 700, color: DSH_COLORS2.secondary }, children: "\u8D26\u6237\u4F59\u989D" }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontSize: 11, fontWeight: 700, color: DSH_COLORS4.secondary }, children: "\u8D26\u6237\u4F59\u989D" }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
           "div",
           {
             style: {
@@ -2930,7 +3805,7 @@ function AccountBalancesPanel({ balances }) {
               gap: 8,
               minWidth: 0
             },
-            children: visibleBalances.map((balance) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(AccountBalanceItem, { balance }, balance.provider))
+            children: visibleBalances.map((balance) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(AccountBalanceItem, { balance }, balance.provider))
           }
         )
       ]
@@ -2939,7 +3814,7 @@ function AccountBalancesPanel({ balances }) {
 }
 function AccountBalanceItem({ balance }) {
   const warning = balance.needsRecharge;
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
     "article",
     {
       "aria-label": `${balance.providerName}\u8D26\u6237\u4F59\u989D`,
@@ -2949,19 +3824,19 @@ function AccountBalanceItem({ balance }) {
         alignItems: "center",
         gap: 10,
         padding: "10px 12px",
-        background: warning ? "color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d97706) 9%, var(--dsw-alias-bg-layer-1, #ffffff))" : DSH_COLORS2.layer1,
-        border: warning ? "1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d97706) 42%, transparent)" : `1px solid ${DSH_COLORS2.border1}`,
+        background: warning ? "color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d97706) 9%, var(--dsw-alias-bg-layer-1, #ffffff))" : DSH_COLORS4.layer1,
+        border: warning ? "1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary, #d97706) 42%, transparent)" : `1px solid ${DSH_COLORS4.border1}`,
         borderRadius: 8,
         minWidth: 0
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "grid", gap: 2, minWidth: 0 }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontSize: 10, fontWeight: 700, color: DSH_COLORS2.secondary }, children: balance.providerName }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "grid", gap: 2, minWidth: 0 }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontSize: 10, fontWeight: 700, color: DSH_COLORS4.secondary }, children: balance.providerName }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
             "strong",
             {
               style: {
-                color: warning ? "var(--dsw-alias-state-warn-primary, #b45309)" : DSH_COLORS2.primary,
+                color: warning ? "var(--dsw-alias-state-warn-primary, #b45309)" : DSH_COLORS4.primary,
                 fontSize: balance.supported ? 20 : 13,
                 lineHeight: 1.35,
                 fontWeight: 750,
@@ -2971,9 +3846,9 @@ function AccountBalanceItem({ balance }) {
               children: balance.total?.label ?? "\u6682\u4E0D\u53EF\u7528"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontSize: 10, color: DSH_COLORS2.secondary, overflowWrap: "anywhere" }, children: warning ? `\u4F4E\u4E8E ${balance.rechargeThresholdLabel ?? "5"}\uFF0C\u8BF7\u53CA\u65F6\u5145\u503C` : balance.status === "stale" || balance.status === "expired" ? "\u4F59\u989D\u5FEB\u7167\u5DF2\u8FC7\u671F" : "API \u8D26\u6237" })
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontSize: 10, color: DSH_COLORS4.secondary, overflowWrap: "anywhere" }, children: warning ? `\u4F4E\u4E8E ${balance.rechargeThresholdLabel ?? "5"}\uFF0C\u8BF7\u53CA\u65F6\u5145\u503C` : balance.status === "stale" || balance.status === "expired" ? "\u4F59\u989D\u5FEB\u7167\u5DF2\u8FC7\u671F" : "API \u8D26\u6237" })
         ] }),
-        balance.rechargeUrl ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+        balance.rechargeUrl ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
           "a",
           {
             href: balance.rechargeUrl,
@@ -3009,23 +3884,23 @@ function NativeSessionStagePanel({ stage, isHistorical }) {
     { bucket: tokenBreakdown.cacheHit, accent: TOKEN_DETAIL_COLORS.cacheHit },
     { bucket: tokenBreakdown.output, accent: TOKEN_DETAIL_COLORS.output }
   ];
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "grid", gap: 10, minWidth: 0 }, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(StageMetadataPanel, { stage }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "grid", gap: 10, minWidth: 0 }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(StageMetadataPanel, { stage }),
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
       "div",
       {
         style: {
-          background: DSH_COLORS2.layer1,
+          background: DSH_COLORS4.layer1,
           borderRadius: 8,
-          border: `1px solid ${DSH_COLORS2.border2}`,
+          border: `1px solid ${DSH_COLORS4.border2}`,
           borderTop: `2px solid ${TOKEN_DETAIL_COLORS.accentBorder}`,
           padding: "8px 9px 7px",
           overflow: "hidden",
           minWidth: 0
         },
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("table", { style: { width: "100%", tableLayout: "fixed", borderCollapse: "collapse", fontSize: 11 }, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("table", { style: { width: "100%", tableLayout: "fixed", borderCollapse: "collapse", fontSize: 11 }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
               "caption",
               {
                 style: {
@@ -3042,36 +3917,36 @@ function NativeSessionStagePanel({ stage, isHistorical }) {
                 ]
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("colgroup", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("col", { style: { width: "38%" } }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("col", { style: { width: "18%" } }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("col", { style: { width: "24%" } }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("col", { style: { width: "20%" } })
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("colgroup", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("col", { style: { width: "38%" } }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("col", { style: { width: "18%" } }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("col", { style: { width: "24%" } }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("col", { style: { width: "20%" } })
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("tr", { style: { color: DSH_COLORS2.tertiary, background: DSH_COLORS2.layer1, fontSize: 9 }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("th", { scope: "col", style: { textAlign: "left", padding: "2px 0", fontWeight: 600 }, children: "\u8BA1\u8D39\u9879" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("th", { scope: "col", style: { textAlign: "right", padding: "2px 4px", fontWeight: 600 }, children: "Token" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("tr", { style: { color: DSH_COLORS4.tertiary, background: DSH_COLORS4.layer1, fontSize: 9 }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("th", { scope: "col", style: { textAlign: "left", padding: "2px 0", fontWeight: 600 }, children: "\u8BA1\u8D39\u9879" }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("th", { scope: "col", style: { textAlign: "right", padding: "2px 4px", fontWeight: 600 }, children: "Token" }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
                 "th",
                 {
                   scope: "col",
                   "aria-label": `\u5355\u4EF7\uFF08${priceCurrencyLabel}/\u767E\u4E07 Token\uFF09`,
                   style: { textAlign: "right", padding: "2px 4px", fontWeight: 600, lineHeight: 1.2 },
                   children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { display: "block" }, children: "\u5355\u4EF7" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { "aria-hidden": "true", style: { display: "block", fontSize: 8, fontWeight: 500 }, children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { display: "block" }, children: "\u5355\u4EF7" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { "aria-hidden": "true", style: { display: "block", fontSize: 8, fontWeight: 500 }, children: [
                       priceCurrencyLabel,
                       "/\u767E\u4E07 Token"
                     ] })
                   ]
                 }
               ),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("th", { scope: "col", style: { textAlign: "right", padding: "2px 0", fontWeight: 600 }, children: "\u8D39\u7528" })
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("th", { scope: "col", style: { textAlign: "right", padding: "2px 0", fontWeight: 600 }, children: "\u8D39\u7528" })
             ] }) }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("tbody", { children: [
-              tokenRows.map(({ bucket, accent }) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("tr", { style: { background: DSH_COLORS2.layer1, borderBottom: `1px solid ${DSH_COLORS2.border2}` }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("th", { scope: "row", style: { textAlign: "left", padding: "4px 0", fontWeight: 600, color: DSH_COLORS2.secondary }, children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("tbody", { children: [
+              tokenRows.map(({ bucket, accent }) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("tr", { style: { background: DSH_COLORS4.layer1, borderBottom: `1px solid ${DSH_COLORS4.border2}` }, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("th", { scope: "row", style: { textAlign: "left", padding: "4px 0", fontWeight: 600, color: DSH_COLORS4.secondary }, children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                     "span",
                     {
                       "aria-hidden": "true",
@@ -3088,8 +3963,8 @@ function NativeSessionStagePanel({ stage, isHistorical }) {
                   ),
                   formatTokenBucketLabel(bucket.label)
                 ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("td", { style: { textAlign: "right", padding: "4px", fontVariantNumeric: "tabular-nums", color: DSH_COLORS2.secondary }, children: bucket.tokens.toLocaleString("en-US") }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("td", { style: { textAlign: "right", padding: "4px", fontVariantNumeric: "tabular-nums", color: DSH_COLORS4.secondary }, children: bucket.tokens.toLocaleString("en-US") }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                   "td",
                   {
                     style: {
@@ -3097,12 +3972,12 @@ function NativeSessionStagePanel({ stage, isHistorical }) {
                       padding: "4px",
                       fontVariantNumeric: "tabular-nums",
                       whiteSpace: "nowrap",
-                      color: DSH_COLORS2.secondary
+                      color: DSH_COLORS4.secondary
                     },
                     children: bucket.unitPriceMixed ? "\u6DF7\u5408" : bucket.unitPrice?.label ?? "--"
                   }
                 ),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                   "td",
                   {
                     style: {
@@ -3110,30 +3985,30 @@ function NativeSessionStagePanel({ stage, isHistorical }) {
                       padding: "4px 0",
                       fontVariantNumeric: "tabular-nums",
                       fontWeight: 600,
-                      color: DSH_COLORS2.primary
+                      color: DSH_COLORS4.primary
                     },
                     children: formatTokenCostAmount(bucket.amount.label, bucket.amount.microCny, hasUnknownCost)
                   }
                 )
               ] }, bucket.label)),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("tr", { style: { color: DSH_COLORS2.secondary, background: DSH_COLORS2.layer1, borderTop: `1px solid ${TOKEN_DETAIL_COLORS.derivedBorder}` }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("th", { scope: "row", style: { textAlign: "left", padding: "4px 0 4px 8px", fontWeight: 500 }, children: "\u63A8\u7406 Token" }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("td", { style: { textAlign: "right", padding: "4px", fontVariantNumeric: "tabular-nums" }, children: formatTokenCount(tokenBreakdown.reasoning.tokens) }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("td", { style: { textAlign: "right", padding: "4px", fontSize: 10, whiteSpace: "nowrap" }, children: "\u540C\u8F93\u51FA" }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("td", { style: { textAlign: "right", padding: "4px 0", fontSize: 10, color: DSH_COLORS2.tertiary }, children: "\u5DF2\u5305\u542B" })
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("tr", { style: { color: DSH_COLORS4.secondary, background: DSH_COLORS4.layer1, borderTop: `1px solid ${TOKEN_DETAIL_COLORS.derivedBorder}` }, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("th", { scope: "row", style: { textAlign: "left", padding: "4px 0 4px 8px", fontWeight: 500 }, children: "\u63A8\u7406 Token" }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("td", { style: { textAlign: "right", padding: "4px", fontVariantNumeric: "tabular-nums" }, children: formatTokenCount(tokenBreakdown.reasoning.tokens) }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("td", { style: { textAlign: "right", padding: "4px", fontSize: 10, whiteSpace: "nowrap" }, children: "\u540C\u8F93\u51FA" }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("td", { style: { textAlign: "right", padding: "4px 0", fontSize: 10, color: DSH_COLORS4.tertiary }, children: "\u5DF2\u5305\u542B" })
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("tr", { style: { color: DSH_COLORS2.secondary, background: DSH_COLORS2.layer1, borderBottom: `1px solid ${TOKEN_DETAIL_COLORS.derivedBorder}` }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("th", { scope: "row", style: { textAlign: "left", padding: "4px 0 4px 8px", fontWeight: 500 }, children: "\u975E\u63A8\u7406 Token" }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("td", { style: { textAlign: "right", padding: "4px", fontVariantNumeric: "tabular-nums" }, children: tokenBreakdown.nonReasoningTokens === null ? "\u65E0\u6CD5\u63A8\u5BFC" : formatTokenCount(tokenBreakdown.nonReasoningTokens) }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("td", { style: { textAlign: "right", padding: "4px", fontSize: 10, whiteSpace: "nowrap" }, children: tokenBreakdown.nonReasoningTokens === null ? "--" : "\u540C\u8F93\u51FA" }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("tr", { style: { color: DSH_COLORS4.secondary, background: DSH_COLORS4.layer1, borderBottom: `1px solid ${TOKEN_DETAIL_COLORS.derivedBorder}` }, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("th", { scope: "row", style: { textAlign: "left", padding: "4px 0 4px 8px", fontWeight: 500 }, children: "\u975E\u63A8\u7406 Token" }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("td", { style: { textAlign: "right", padding: "4px", fontVariantNumeric: "tabular-nums" }, children: tokenBreakdown.nonReasoningTokens === null ? "\u65E0\u6CD5\u63A8\u5BFC" : formatTokenCount(tokenBreakdown.nonReasoningTokens) }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("td", { style: { textAlign: "right", padding: "4px", fontSize: 10, whiteSpace: "nowrap" }, children: tokenBreakdown.nonReasoningTokens === null ? "--" : "\u540C\u8F93\u51FA" }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                   "td",
                   {
                     style: {
                       textAlign: "right",
                       padding: "4px 0",
                       fontSize: 10,
-                      color: tokenBreakdown.nonReasoningTokens === null ? TOKEN_DETAIL_COLORS.anomaly : DSH_COLORS2.tertiary,
+                      color: tokenBreakdown.nonReasoningTokens === null ? TOKEN_DETAIL_COLORS.anomaly : DSH_COLORS4.tertiary,
                       fontWeight: tokenBreakdown.nonReasoningTokens === null ? 700 : 500
                     },
                     children: tokenBreakdown.nonReasoningTokens === null ? "\u6570\u636E\u5F02\u5E38" : "\u63A8\u5BFC\u503C"
@@ -3141,20 +4016,20 @@ function NativeSessionStagePanel({ stage, isHistorical }) {
                 )
               ] })
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("tfoot", { children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("tr", { style: { borderTop: `1px solid ${TOKEN_DETAIL_COLORS.accentBorder}`, background: DSH_COLORS2.layer1 }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("th", { scope: "row", style: { textAlign: "left", padding: "6px 0", fontWeight: 700, color: DSH_COLORS2.primary }, children: "\u603B Token" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("td", { style: { textAlign: "right", padding: "6px 4px", fontVariantNumeric: "tabular-nums", fontWeight: 700, color: DSH_COLORS2.primary }, children: formatTokenCount(tokenBreakdown.totalTokens) }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("td", { style: { textAlign: "right", padding: "6px 4px", fontSize: 10, color: TOKEN_DETAIL_COLORS.note }, children: "\u6DF7\u5408" }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("td", { style: { textAlign: "right", padding: "6px 0", fontWeight: 800, color: TOKEN_DETAIL_COLORS.total }, children: stageTotalLabel })
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("tfoot", { children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("tr", { style: { borderTop: `1px solid ${TOKEN_DETAIL_COLORS.accentBorder}`, background: DSH_COLORS4.layer1 }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("th", { scope: "row", style: { textAlign: "left", padding: "6px 0", fontWeight: 700, color: DSH_COLORS4.primary }, children: "\u603B Token" }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("td", { style: { textAlign: "right", padding: "6px 4px", fontVariantNumeric: "tabular-nums", fontWeight: 700, color: DSH_COLORS4.primary }, children: formatTokenCount(tokenBreakdown.totalTokens) }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("td", { style: { textAlign: "right", padding: "6px 4px", fontSize: 10, color: TOKEN_DETAIL_COLORS.note }, children: "\u6DF7\u5408" }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("td", { style: { textAlign: "right", padding: "6px 0", fontWeight: 800, color: TOKEN_DETAIL_COLORS.total }, children: stageTotalLabel })
             ] }) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { style: { margin: "6px 0 1px", paddingLeft: 7, borderLeft: `2px solid ${TOKEN_DETAIL_COLORS.accentBorder}`, fontSize: 9, color: TOKEN_DETAIL_COLORS.note }, children: "\u63A8\u7406 Token \u5DF2\u5305\u542B\u5728\u8F93\u51FA\u8D39\u7528\u4E2D\uFF0C\u4E0D\u91CD\u590D\u8BA1\u8D39" })
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { style: { margin: "6px 0 1px", paddingLeft: 7, borderLeft: `2px solid ${TOKEN_DETAIL_COLORS.accentBorder}`, fontSize: 9, color: TOKEN_DETAIL_COLORS.note }, children: "\u63A8\u7406 Token \u5DF2\u5305\u542B\u5728\u8F93\u51FA\u8D39\u7528\u4E2D\uFF0C\u4E0D\u91CD\u590D\u8BA1\u8D39" })
         ]
       }
     ),
     contextBreakdownRows(stage.contextBreakdown, isHistorical ? "\u5386\u53F2\u5FEB\u7167\u6682\u4E0D\u53EF\u7528" : "\u6682\u4E0D\u53EF\u7528"),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { style: { fontSize: 10, color: DSH_COLORS2.secondary }, children: "\u8F6E\u6B21\u660E\u7EC6" }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { fontSize: 10, color: DSH_COLORS4.secondary }, children: "\u8F6E\u6B21\u660E\u7EC6" }),
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
       "ol",
       {
         style: {
@@ -3166,22 +4041,22 @@ function NativeSessionStagePanel({ stage, isHistorical }) {
           maxHeight: 140,
           overflowY: "auto"
         },
-        children: stage.turns.length > 0 ? stage.turns.map((turn) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+        children: stage.turns.length > 0 ? stage.turns.map((turn) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
           "li",
           {
             style: {
               padding: "4px 8px",
-              background: DSH_COLORS2.layer2,
+              background: DSH_COLORS4.layer2,
               borderRadius: 4,
-              border: `1px solid ${DSH_COLORS2.border2}`,
+              border: `1px solid ${DSH_COLORS4.border2}`,
               fontSize: 10,
               fontVariantNumeric: "tabular-nums",
-              color: DSH_COLORS2.secondary
+              color: DSH_COLORS4.secondary
             },
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, minWidth: 0 }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { style: { color: DSH_COLORS2.primary, minWidth: 0, overflowWrap: "anywhere" }, children: formatTurnSequenceLabel(turn.label) }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { style: { minWidth: 0, textAlign: "right", overflowWrap: "anywhere" }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, minWidth: 0 }, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { color: DSH_COLORS4.primary, minWidth: 0, overflowWrap: "anywhere" }, children: formatTurnSequenceLabel(turn.label) }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { minWidth: 0, textAlign: "right", overflowWrap: "anywhere" }, children: [
                   formatTurnPricingZone(turn.pricingZone),
                   " \xB7 ",
                   formatStatusLabel(turn.status),
@@ -3189,7 +4064,7 @@ function NativeSessionStagePanel({ stage, isHistorical }) {
                   turn.amount.label
                 ] })
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { marginTop: 3, lineHeight: 1.5 }, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { marginTop: 3, lineHeight: 1.5 }, children: [
                 "\u65E0\u7F13\u5B58 ",
                 formatTokenCount(turn.cacheMissTokens),
                 " \xB7 \u7F13\u5B58 ",
@@ -3203,16 +4078,16 @@ function NativeSessionStagePanel({ stage, isHistorical }) {
             ]
           },
           turn.id
-        )) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+        )) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
           "li",
           {
             style: {
               padding: "4px 8px",
-              background: DSH_COLORS2.layer2,
+              background: DSH_COLORS4.layer2,
               borderRadius: 4,
-              border: `1px solid ${DSH_COLORS2.border2}`,
+              border: `1px solid ${DSH_COLORS4.border2}`,
               fontSize: 10,
-              color: DSH_COLORS2.secondary
+              color: DSH_COLORS4.secondary
             },
             children: "\u6682\u65E0\u8BF7\u6C42\u660E\u7EC6\u3002"
           }
@@ -3249,50 +4124,50 @@ function SettingsPanel({
     justifyContent: "space-between",
     alignItems: "center",
     padding: "8px 10px",
-    background: DSH_COLORS2.layer1,
-    border: `1px solid ${DSH_COLORS2.border1}`,
+    background: DSH_COLORS4.layer1,
+    border: `1px solid ${DSH_COLORS4.border1}`,
     borderRadius: 8,
     fontSize: 12,
-    color: DSH_COLORS2.primary
+    color: DSH_COLORS4.primary
   };
   const inputStyle = {
     padding: "4px 8px",
-    background: DSH_COLORS2.layer2,
-    border: `1px solid ${DSH_COLORS2.border1}`,
+    background: DSH_COLORS4.layer2,
+    border: `1px solid ${DSH_COLORS4.border1}`,
     borderRadius: 6,
-    color: DSH_COLORS2.primary,
+    color: DSH_COLORS4.primary,
     fontSize: 12,
     outline: "none"
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("section", { "aria-label": "\u8BBE\u7F6E", style: { display: "grid", gap: 8 }, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("label", { style: rowStyle, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontWeight: 500 }, children: "\u51CF\u5C11\u52A8\u753B" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { "aria-label": "\u8BBE\u7F6E", style: { display: "grid", gap: 8 }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { style: rowStyle, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontWeight: 500 }, children: "\u51CF\u5C11\u52A8\u753B" }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
         "input",
         {
           type: "checkbox",
           checked: state.settings.reducedMotion,
           onChange: (event) => store.setReducedMotion(event.target.checked),
-          style: { width: 16, height: 16, cursor: "pointer", accentColor: DSH_COLORS2.brand }
+          style: { width: 16, height: 16, cursor: "pointer", accentColor: DSH_COLORS4.brand }
         }
       )
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("label", { style: rowStyle, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontWeight: 500 }, children: "\u9ED8\u8BA4\u9759\u97F3" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { style: rowStyle, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontWeight: 500 }, children: "\u9ED8\u8BA4\u9759\u97F3" }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
         "input",
         {
           type: "checkbox",
           checked: state.settings.muted,
           onChange: (event) => store.setMuted(event.target.checked),
-          style: { width: 16, height: 16, cursor: "pointer", accentColor: DSH_COLORS2.brand }
+          style: { width: 16, height: 16, cursor: "pointer", accentColor: DSH_COLORS4.brand }
         }
       )
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("label", { style: rowStyle, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontWeight: 500 }, children: "\u4F59\u989D\u5237\u65B0" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { style: rowStyle, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontWeight: 500 }, children: "\u4F59\u989D\u5237\u65B0" }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
           "input",
           {
             type: "number",
@@ -3303,13 +4178,13 @@ function SettingsPanel({
             style: { ...inputStyle, width: 64, textAlign: "right" }
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { color: DSH_COLORS2.secondary }, children: "\u79D2" })
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { color: DSH_COLORS4.secondary }, children: "\u79D2" })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("label", { style: rowStyle, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontWeight: 500 }, children: "\u9884\u7B97\u9608\u503C" }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { style: rowStyle, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontWeight: 500 }, children: "\u9884\u7B97\u9608\u503C" }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
           "input",
           {
             type: "number",
@@ -3320,10 +4195,10 @@ function SettingsPanel({
             style: { ...inputStyle, width: 80, textAlign: "right" }
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { color: DSH_COLORS2.secondary }, children: "\u5143" })
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { color: DSH_COLORS4.secondary }, children: "\u5143" })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
       "button",
       {
         type: "button",
@@ -3346,9 +4221,9 @@ function SettingsPanel({
   ] });
 }
 function MyMeterSettingsCard({ store }) {
-  const [open, setOpen] = (0, import_react3.useState)(false);
+  const [open, setOpen] = (0, import_react4.useState)(false);
   const action = open ? "\u6536\u8D77" : "\u5C55\u5F00";
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
     "li",
     {
       "data-testid": "mymeter-settings-card",
@@ -3362,7 +4237,7 @@ function MyMeterSettingsCard({ store }) {
         boxShadow: "0 2px 8px color-mix(in srgb, var(--dsw-alias-label-primary, #111827) 8%, transparent)"
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
           "button",
           {
             type: "button",
@@ -3384,11 +4259,11 @@ function MyMeterSettingsCard({ store }) {
               cursor: "pointer"
             },
             children: [
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { style: { flex: 1, minWidth: 0, display: "grid", gap: 3 }, children: [
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { style: { fontSize: 15, lineHeight: 1.4 }, children: "Token\u8BA1\u8D39" }),
-                /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { style: { fontSize: 13, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary, #6b7280)" }, children: "\u8DDF\u968F DSH \u5168\u5C40\u4E3B\u9898\uFF0C\u914D\u7F6E\u52A8\u6548\u3001\u5237\u65B0\u4E0E\u9884\u7B97\u504F\u597D" })
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { flex: 1, minWidth: 0, display: "grid", gap: 3 }, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { style: { fontSize: 15, lineHeight: 1.4 }, children: "Token\u8BA1\u8D39" }),
+                /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { fontSize: 13, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary, #6b7280)" }, children: "\u8DDF\u968F DSH \u5168\u5C40\u4E3B\u9898\uFF0C\u914D\u7F6E\u52A8\u6548\u3001\u5237\u65B0\u4E0E\u9884\u7B97\u504F\u597D" })
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
                 "span",
                 {
                   "aria-hidden": "true",
@@ -3406,7 +4281,7 @@ function MyMeterSettingsCard({ store }) {
             ]
           }
         ),
-        open ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+        open ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
           "div",
           {
             style: {
@@ -3414,7 +4289,7 @@ function MyMeterSettingsCard({ store }) {
               padding: "14px 0 16px",
               borderTop: "1px solid var(--dsw-alias-border-l2, #d1d5db)"
             },
-            children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(SettingsPanel, { store })
+            children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(SettingsPanel, { store })
           }
         ) : null
       ]
@@ -3697,8 +4572,8 @@ function defaultReload() {
 }
 
 // packages/client/src/shell-overlay.tsx
-var import_react4 = require("react");
-var import_jsx_runtime4 = require("react/jsx-runtime");
+var import_react5 = require("react");
+var import_jsx_runtime6 = require("react/jsx-runtime");
 var useEmptySessions = (selector) => selector({});
 var DEFAULT_TOP_GAP = 50;
 var DEFAULT_RIGHT_GAP = 50;
@@ -3741,13 +4616,13 @@ function ShellOverlay({
   const currentSessionId = selectSessions((state2) => state2.current ?? null);
   const state = useMyMeterStoreState(store);
   const hasBillableCurrentSession = !useSessions || currentSessionId !== null && state.remote.details[currentSessionId] !== void 0;
-  (0, import_react4.useEffect)(() => {
+  (0, import_react5.useEffect)(() => {
     if (!useSessions) return;
     store.syncCurrentSession(currentSessionId);
   }, [currentSessionId, store, useSessions]);
-  const shellRef = (0, import_react4.useRef)(null);
-  const userDraggedRef = (0, import_react4.useRef)(false);
-  (0, import_react4.useLayoutEffect)(() => {
+  const shellRef = (0, import_react5.useRef)(null);
+  const userDraggedRef = (0, import_react5.useRef)(false);
+  (0, import_react5.useLayoutEffect)(() => {
     if (!hasBillableCurrentSession || !state.settings.overlayEnabled || !state.ui.overlayVisible) return;
     let anchorBounds = null;
     let overlayWidth = 0;
@@ -3832,7 +4707,7 @@ function ShellOverlay({
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)(
     "div",
     {
       ref: shellRef,
@@ -3862,7 +4737,7 @@ function ShellOverlay({
         touchAction: "none"
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
           "button",
           {
             type: "button",
@@ -3889,10 +4764,10 @@ function ShellOverlay({
               lineHeight: 1,
               cursor: "pointer"
             },
-            children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { "aria-hidden": "true", children: "\xD7" })
+            children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { "aria-hidden": "true", children: "\xD7" })
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
           "div",
           {
             "data-testid": "mymeter-shell-body",
@@ -3902,7 +4777,7 @@ function ShellOverlay({
               borderRadius: 12,
               overflow: "visible"
             },
-            children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+            children: /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
               CompactMeter,
               {
                 store,
@@ -3948,6 +4823,8 @@ var settingsSchema = schema("RemoteSettings", (value) => {
 var exchangeRateSchema = schema("RemoteExchangeRateSnapshot", parseExchangeRate);
 var sessionCostTreeSchema = schema("RemoteSessionCostTree", parseSessionCostTree);
 var costAnalyticsSchema = schema("RemoteCostAnalyticsReport", parseCostAnalyticsReport);
+var usageOverviewQuerySchema = schema("RemoteUsageOverviewQuery", parseUsageOverviewQuery);
+var usageOverviewSchema = schema("RemoteUsageOverviewReport", parseUsageOverviewReport);
 var getSnapshotDescriptor = descriptor("getSnapshot", [], snapshotSchema);
 var listSessionsDescriptor = descriptor("listSessions", [], sessionsSchema);
 var getSessionDetailDescriptor = descriptor(
@@ -3956,10 +4833,16 @@ var getSessionDetailDescriptor = descriptor(
   sessionDetailOrNullSchema
 );
 var getBalanceDescriptor = descriptor("getBalance", [], balanceSchema);
+var refreshBalanceDescriptor = descriptor("refreshBalance", [], balanceSchema);
 var getSettingsDescriptor = descriptor("getSettings", [], settingsSchema);
 var refreshExchangeRateDescriptor = descriptor("refreshExchangeRate", [], exchangeRateSchema);
 var getSessionCostTreeDescriptor = descriptor("getSessionCostTree", [], sessionCostTreeSchema);
 var getCostAnalyticsDescriptor = descriptor("getCostAnalytics", [], costAnalyticsSchema);
+var getUsageOverviewDescriptor = descriptor(
+  "getUsageOverview",
+  [{ name: "query", wire: "query", source: "json", codec: codec("RemoteUsageOverviewQuery", usageOverviewQuerySchema) }],
+  usageOverviewSchema
+);
 var exportLedgerDescriptor = descriptor(
   "exportLedger",
   [{ name: "format", wire: "format", source: "json", codec: codec("LedgerExportFormat", ledgerExportFormatSchema) }],
@@ -3970,10 +4853,12 @@ var MYMETER_REMOTE_DESCRIPTORS = [
   listSessionsDescriptor,
   getSessionDetailDescriptor,
   getBalanceDescriptor,
+  refreshBalanceDescriptor,
   getSettingsDescriptor,
   refreshExchangeRateDescriptor,
   getSessionCostTreeDescriptor,
   getCostAnalyticsDescriptor,
+  getUsageOverviewDescriptor,
   exportLedgerDescriptor
 ];
 var MYMETER_REMOTE_CONTRIBUTION = Object.freeze({
@@ -3992,6 +4877,8 @@ var MYMETER_LOCAL_TYPERT_CONTRIBUTION = Object.freeze({
     { name: "RemoteExchangeRateSnapshot", schema: exchangeRateSchema },
     { name: "RemoteSessionCostTree", schema: sessionCostTreeSchema },
     { name: "RemoteCostAnalyticsReport", schema: costAnalyticsSchema },
+    { name: "RemoteUsageOverviewQuery", schema: usageOverviewQuerySchema },
+    { name: "RemoteUsageOverviewReport", schema: usageOverviewSchema },
     { name: "LedgerExportFormat", schema: ledgerExportFormatSchema }
   ],
   model: {
@@ -4018,7 +4905,9 @@ async function createMyMeterRemoteFromTypert(namespace, options = {}) {
   let disposed = false;
   let refreshing = false;
   let refreshingBalance = false;
+  let initialBalanceRequested = false;
   const pollIntervalMs = options.pollIntervalMs ?? 200;
+  const balancePollIntervalMs = options.balancePollIntervalMs ?? 5 * 6e4;
   async function refresh() {
     if (disposed || refreshing) return;
     refreshing = true;
@@ -4037,36 +4926,63 @@ async function createMyMeterRemoteFromTypert(namespace, options = {}) {
     }
     if (disposed) return;
     for (const listener of listeners) listener(snapshot);
-    void refreshBalance();
+    if (!initialBalanceRequested) {
+      initialBalanceRequested = true;
+      void updateBalance().then((balance) => {
+        if (!balance || disposed) return;
+        for (const listener of listeners) listener(snapshot);
+      });
+    }
   }
-  async function refreshBalance() {
-    if (disposed || refreshingBalance) return;
+  async function updateBalance(force = false) {
+    if (disposed || refreshingBalance) return null;
     refreshingBalance = true;
     try {
-      const result = await namespace.getBalance();
-      if (!result.ok || disposed) return;
+      const result = force && namespace.refreshBalance ? await namespace.refreshBalance() : await namespace.getBalance();
+      if (!result.ok || disposed) return null;
       const balance = balanceSchema.parse(result.value);
       snapshot = {
         ...snapshot,
         balance,
         balances: refreshSupportedBalances(snapshot.balances, balance)
       };
+      return balance;
     } catch {
-      return;
+      return null;
     } finally {
       refreshingBalance = false;
     }
-    if (disposed) return;
-    for (const listener of listeners) listener(snapshot);
   }
   const interval = pollIntervalMs > 0 ? setInterval(() => {
     void refresh();
   }, pollIntervalMs) : null;
   if (interval?.unref) interval.unref();
+  const balanceInterval = balancePollIntervalMs > 0 ? setInterval(() => {
+    void updateBalance().then((balance) => {
+      if (!balance || disposed) return;
+      for (const listener of listeners) listener(snapshot);
+    });
+  }, balancePollIntervalMs) : null;
+  if (balanceInterval?.unref) balanceInterval.unref();
+  const handleVisibilityChange = () => {
+    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+      void updateBalance().then((balance) => {
+        if (!balance || disposed) return;
+        for (const listener of listeners) listener(snapshot);
+      });
+    }
+  };
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+  }
   function dispose() {
     if (disposed) return;
     disposed = true;
     if (interval) clearInterval(interval);
+    if (balanceInterval) clearInterval(balanceInterval);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    }
     listeners.clear();
   }
   return {
@@ -4082,6 +4998,12 @@ async function createMyMeterRemoteFromTypert(namespace, options = {}) {
       };
     },
     refresh,
+    async refreshBalance() {
+      const balance = await updateBalance(true);
+      if (!balance) return snapshot.balance;
+      for (const listener of listeners) listener(snapshot);
+      return balance;
+    },
     async refreshExchangeRate() {
       if (!namespace.refreshExchangeRate) return;
       const result = await namespace.refreshExchangeRate();
@@ -4104,6 +5026,15 @@ async function createMyMeterRemoteFromTypert(namespace, options = {}) {
       const result = await namespace.getCostAnalytics();
       if (!result.ok) throw new Error(`mymeter: getCostAnalytics failed: ${result.error.message}`);
       return costAnalyticsSchema.parse(result.value);
+    },
+    async getUsageOverview(query) {
+      if (!namespace.getUsageOverview) {
+        throw new Error("mymeter: getUsageOverview failed: method unavailable");
+      }
+      const parsedQuery = usageOverviewQuerySchema.parse(query);
+      const result = await namespace.getUsageOverview(parsedQuery);
+      if (!result.ok) throw new Error(`mymeter: getUsageOverview failed: ${result.error.message}`);
+      return usageOverviewSchema.parse(result.value);
     },
     async exportLedger(format) {
       if (!namespace.exportLedger) {
@@ -4172,7 +5103,8 @@ function parseSnapshot(value) {
     balances,
     sessions,
     details,
-    ...record.exchangeRate === void 0 ? {} : { exchangeRate: parseExchangeRate(record.exchangeRate) }
+    ...record.exchangeRate === void 0 ? {} : { exchangeRate: parseExchangeRate(record.exchangeRate) },
+    ...record.ledgerGeneration === void 0 ? {} : { ledgerGeneration: nonNegativeInteger(record.ledgerGeneration, "ledgerGeneration") }
   };
 }
 function parseSessionCostTree(value) {
@@ -4269,6 +5201,83 @@ function parseCostAnalyticsReport(value) {
       (item) => parseAnalyticsTrendBucket(item, "costAnalytics.hourlyTrend")
     ),
     anomalies: array(record.anomalies, "costAnalytics.anomalies").map(parseAnalyticsAnomaly)
+  };
+}
+function parseUsageOverviewQuery(value) {
+  const record = object(value, "usageOverviewQuery");
+  const range = oneOf(record.range, ["today", "7d", "30d"], "usageOverviewQuery.range");
+  if (record.timeZone === void 0) return { range };
+  const timeZone = boundedString(record.timeZone, "usageOverviewQuery.timeZone", 100);
+  try {
+    new Intl.DateTimeFormat("en", { timeZone }).format(0);
+  } catch {
+    throw new Error("usageOverviewQuery.timeZone: expected valid IANA time zone");
+  }
+  return { range, timeZone };
+}
+function parseUsageOverviewReport(value) {
+  const record = object(value, "usageOverview");
+  const range = oneOf(record.range, ["today", "7d", "30d"], "usageOverview.range");
+  const expectedBuckets = range === "today" ? 24 : range === "7d" ? 7 : 30;
+  const trend = array(record.trend, "usageOverview.trend");
+  const topModels = array(record.topModels, "usageOverview.topModels");
+  if (trend.length !== expectedBuckets) {
+    throw new Error(`usageOverview.trend: expected ${expectedBuckets} buckets`);
+  }
+  if (topModels.length > 10) throw new Error("usageOverview.topModels: expected at most 10 models");
+  const timeZone = parseTimeZone(record.timeZone, "usageOverview.timeZone");
+  return {
+    range,
+    timeZone,
+    generatedAt: timestamp(record.generatedAt, "usageOverview.generatedAt"),
+    startAt: timestamp(record.startAt, "usageOverview.startAt"),
+    endAt: timestamp(record.endAt, "usageOverview.endAt"),
+    totals: parseUsageOverviewTotal(record.totals, "usageOverview.totals"),
+    trend: trend.map((item, index) => {
+      const bucket = object(item, `usageOverview.trend[${index}]`);
+      return {
+        key: boundedString(bucket.key, `usageOverview.trend[${index}].key`, 32),
+        startAt: timestamp(bucket.startAt, `usageOverview.trend[${index}].startAt`),
+        endAt: timestamp(bucket.endAt, `usageOverview.trend[${index}].endAt`),
+        ...parseUsageOverviewTotal(bucket, `usageOverview.trend[${index}]`),
+        models: bucket.models === void 0 ? [] : parseUsageOverviewModels(bucket.models, `usageOverview.trend[${index}].models`)
+      };
+    }),
+    topModels: topModels.map((item, index) => {
+      const model = object(item, `usageOverview.topModels[${index}]`);
+      return {
+        provider: boundedString(model.provider, `usageOverview.topModels[${index}].provider`, 120),
+        model: boundedString(model.model, `usageOverview.topModels[${index}].model`, 240),
+        ...parseUsageOverviewTotal(model, `usageOverview.topModels[${index}]`)
+      };
+    })
+  };
+}
+function parseUsageOverviewModels(value, field) {
+  return array(value, field).map((item, index) => {
+    const model = object(item, `${field}[${index}]`);
+    return {
+      provider: boundedString(model.provider, `${field}[${index}].provider`, 120),
+      model: boundedString(model.model, `${field}[${index}].model`, 240),
+      ...parseUsageOverviewTotal(model, `${field}[${index}]`)
+    };
+  });
+}
+function parseUsageOverviewTotal(value, field) {
+  const record = object(value, field);
+  const requestCount = nonNegativeInteger(record.requestCount, `${field}.requestCount`);
+  const pricedRequestCount = nonNegativeInteger(record.pricedRequestCount, `${field}.pricedRequestCount`);
+  const unknownRequestCount = nonNegativeInteger(record.unknownRequestCount, `${field}.unknownRequestCount`);
+  if (pricedRequestCount + unknownRequestCount !== requestCount) {
+    throw new Error(`${field}: request coverage counts do not add up`);
+  }
+  return {
+    amountMicroCny: nonNegativeInteger(record.amountMicroCny, `${field}.amountMicroCny`),
+    totalTokens: nonNegativeInteger(record.totalTokens, `${field}.totalTokens`),
+    requestCount,
+    pricedRequestCount,
+    unknownRequestCount,
+    coverage: oneOf(record.coverage, ["complete", "partial", "unavailable"], `${field}.coverage`)
   };
 }
 function parseAnalyticsTotal(value, field) {
@@ -4571,6 +5580,25 @@ function nonEmptyString(value, field) {
   if (!parsed.trim()) throw new Error(`${field}: expected non-empty string`);
   return parsed;
 }
+function boundedString(value, field, maximumLength) {
+  const parsed = nonEmptyString(value, field);
+  if (parsed.length > maximumLength) throw new Error(`${field}: string is too long`);
+  return parsed;
+}
+function parseTimeZone(value, field) {
+  const timeZone = boundedString(value, field, 100);
+  try {
+    new Intl.DateTimeFormat("en", { timeZone }).format(0);
+  } catch {
+    throw new Error(`${field}: expected valid IANA time zone`);
+  }
+  return timeZone;
+}
+function timestamp(value, field) {
+  const parsed = boundedString(value, field, 64);
+  if (!Number.isFinite(Date.parse(parsed))) throw new Error(`${field}: expected timestamp`);
+  return parsed;
+}
 function nullableString(value, field) {
   if (value === null) return null;
   return requiredString(value, field);
@@ -4597,6 +5625,11 @@ function nonNegativeNumber(value, field) {
 function positiveInteger(value, field) {
   const number = finiteNumber(value, field);
   if (!Number.isInteger(number) || number <= 0) throw new Error(`${field}: expected positive integer`);
+  return number;
+}
+function nonNegativeInteger(value, field) {
+  const number = nonNegativeNumber(value, field);
+  if (!Number.isSafeInteger(number)) throw new Error(`${field}: expected safe integer`);
   return number;
 }
 function nullableNumber(value, field) {
@@ -4655,7 +5688,7 @@ async function mountMyMeterUi(ctx) {
     () => updateController.dispose(),
     ctx.slots.inject("shell.overlay", () => ctx.slots.register(
       { name: "shell.overlay", id: "mymeter", order: 100 },
-      (props) => (0, import_react5.createElement)(ShellOverlay, {
+      (props) => (0, import_react6.createElement)(ShellOverlay, {
         store,
         ...props,
         onOpenTokenBilling: openTokenBillingView
@@ -4663,11 +5696,11 @@ async function mountMyMeterUi(ctx) {
     )),
     ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
       { name: "settings.plugin.item", id: "mymeter", key: "mymeter", order: 30, label: "Token\u8BA1\u8D39" },
-      () => (0, import_react5.createElement)(MyMeterSettingsCard, { store })
+      () => (0, import_react6.createElement)(MyMeterSettingsCard, { store })
     )),
     ctx.slots.inject("conversation.view", () => ctx.slots.register(
       { name: "conversation.view", id: "mymeter", order: 20, label: "Token\u8BA1\u8D39" },
-      (props) => (0, import_react5.createElement)(MyMeterConversationView, {
+      (props) => (0, import_react6.createElement)(MyMeterConversationView, {
         store,
         sessionId: props.sessionId,
         updateController,

@@ -200,3 +200,131 @@ test("balance service does not expose provider response bodies in client-facing 
   expect(snapshot.error).toBe("DeepSeek balance request failed (HTTP 401)");
   expect(snapshot.error).not.toContain("sk-provider-secret");
 });
+
+test("balance service deduplicates concurrent uncached requests", async () => {
+  let calls = 0;
+  let resolveResponse: ((value: Response) => void) | undefined;
+  const response = new Promise<Response>((resolve) => {
+    resolveResponse = resolve;
+  });
+  const service = createDeepSeekBalanceService({
+    baseUrl: "https://api.deepseek.com",
+    apiKey: "sk-host-only",
+    fetchImpl: vi.fn(async () => {
+      calls += 1;
+      return response;
+    }) as unknown as typeof fetch,
+  });
+
+  const first = service.getSnapshot();
+  const second = service.getSnapshot();
+  resolveResponse?.({
+    ok: true,
+    json: async () => ({
+      is_available: true,
+      balance_infos: [{ currency: "CNY", total_balance: "3.5" }],
+    }),
+  } as Response);
+
+  await expect(Promise.all([first, second])).resolves.toMatchObject([
+    { status: "fresh", totalMicroCny: 3_500_000 },
+    { status: "fresh", totalMicroCny: 3_500_000 },
+  ]);
+  expect(calls).toBe(1);
+});
+
+test("force refresh bypasses a fresh balance TTL", async () => {
+  let calls = 0;
+  const service = createDeepSeekBalanceService({
+    baseUrl: "https://api.deepseek.com",
+    apiKey: "sk-host-only",
+    cacheTtlMs: 60 * 60_000,
+    fetchImpl: vi.fn(async () => {
+      calls += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          is_available: true,
+          balance_infos: [{ currency: "CNY", total_balance: String(calls) }],
+        }),
+      } as Response;
+    }) as unknown as typeof fetch,
+  });
+
+  await expect(service.getSnapshot()).resolves.toMatchObject({ total: 1 });
+  await expect(service.getSnapshot()).resolves.toMatchObject({ total: 1 });
+  await expect(service.getSnapshot({ forceRefresh: true })).resolves.toMatchObject({ total: 2 });
+  expect(calls).toBe(2);
+});
+
+test("balance service times out without leaking credentials and keeps the last successful snapshot", async () => {
+  vi.useFakeTimers();
+  try {
+    let calls = 0;
+    const service = createDeepSeekBalanceService({
+      baseUrl: "https://api.deepseek.com",
+      apiKey: "sk-timeout-secret",
+      fetchImpl: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              is_available: true,
+              balance_infos: [{ currency: "CNY", total_balance: "8" }],
+            }),
+          } as Response;
+        }
+        return new Promise<Response>(() => {});
+      }) as unknown as typeof fetch,
+      requestTimeoutMs: 50,
+    });
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({ status: "fresh", total: 8 });
+    const timedOut = service.getSnapshot({ forceRefresh: true });
+    await vi.advanceTimersByTimeAsync(50);
+
+    await expect(timedOut).resolves.toMatchObject({
+      status: "stale",
+      total: 8,
+      error: "DeepSeek balance request timed out",
+    });
+    expect((await timedOut).error).not.toContain("sk-timeout-secret");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("balance service backs off after failures and recovers after the retry window", async () => {
+  let currentTime = 1_000;
+  let calls = 0;
+  const service = createDeepSeekBalanceService({
+    baseUrl: "https://api.deepseek.com",
+    apiKey: "sk-host-only",
+    now: () => currentTime,
+    failureBackoffMs: [100, 200],
+    fetchImpl: vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("network contains sk-host-only");
+      return {
+        ok: true,
+        json: async () => ({
+          is_available: true,
+          balance_infos: [{ currency: "CNY", total_balance: "6" }],
+        }),
+      } as Response;
+    }) as unknown as typeof fetch,
+  });
+
+  const failed = await service.getSnapshot();
+  expect(failed).toMatchObject({ status: "unavailable", error: "DeepSeek balance request failed" });
+  expect(failed.error).not.toContain("sk-host-only");
+
+  currentTime = 1_050;
+  await expect(service.getSnapshot()).resolves.toMatchObject({ status: "unavailable" });
+  expect(calls).toBe(1);
+
+  currentTime = 1_100;
+  await expect(service.getSnapshot()).resolves.toMatchObject({ status: "fresh", total: 6 });
+  expect(calls).toBe(2);
+});

@@ -1,4 +1,4 @@
-import type { AsyncResourceView, CostAnalyticsView, LedgerExportView, MeterStatusCode, MyMeterSettings, MyMeterViewModel, PricingZone, SessionCostTreeView } from "./view-model";
+import type { AsyncResourceView, CostAnalyticsView, LedgerExportView, MeterStatusCode, MyMeterSettings, MyMeterViewModel, PricingZone, SessionCostTreeView, UsageOverviewView } from "./view-model";
 export interface StorageLike {
     getItem(key: string): string | null;
     setItem(key: string, value: string): void;
@@ -256,6 +256,40 @@ export interface RemoteCostAnalyticsReport {
     hourlyTrend: RemoteCostAnalyticsTrendBucket[];
     anomalies: RemoteCostAnalyticsAnomaly[];
 }
+export type UsageOverviewRange = "today" | "7d" | "30d";
+export type UsageOverviewCoverage = "complete" | "partial" | "unavailable";
+export interface RemoteUsageOverviewQuery {
+    range: UsageOverviewRange;
+    timeZone?: string | undefined;
+}
+export interface RemoteUsageOverviewTotal {
+    amountMicroCny: number;
+    totalTokens: number;
+    requestCount: number;
+    pricedRequestCount: number;
+    unknownRequestCount: number;
+    coverage: UsageOverviewCoverage;
+}
+export interface RemoteUsageOverviewTrendBucket extends RemoteUsageOverviewTotal {
+    key: string;
+    startAt: string;
+    endAt: string;
+    models?: RemoteUsageOverviewModelSummary[] | undefined;
+}
+export interface RemoteUsageOverviewModelSummary extends RemoteUsageOverviewTotal {
+    provider: string;
+    model: string;
+}
+export interface RemoteUsageOverviewReport {
+    range: UsageOverviewRange;
+    timeZone: string;
+    generatedAt: string;
+    startAt: string;
+    endAt: string;
+    totals: RemoteUsageOverviewTotal;
+    trend: RemoteUsageOverviewTrendBucket[];
+    topModels: RemoteUsageOverviewModelSummary[];
+}
 export interface MyMeterRemoteSnapshot {
     connection: {
         status: ConnectionStatus;
@@ -268,18 +302,22 @@ export interface MyMeterRemoteSnapshot {
     sessions: RemoteSessionSummary[];
     details: Record<string, RemoteSessionDetail>;
     exchangeRate?: RemoteExchangeRateSnapshot;
+    ledgerGeneration?: number;
 }
 export interface MyMeterRemote {
     getSnapshot(): MyMeterRemoteSnapshot;
     subscribe(listener: (snapshot: MyMeterRemoteSnapshot) => void): () => void;
     refreshExchangeRate?(): Promise<RemoteExchangeRateSnapshot | void>;
+    refreshBalance?(): Promise<RemoteBalanceSnapshot | void>;
     getSessionCostTree?(): Promise<RemoteSessionCostTree>;
     getCostAnalytics?(): Promise<RemoteCostAnalyticsReport>;
+    getUsageOverview?(query: RemoteUsageOverviewQuery): Promise<RemoteUsageOverviewReport>;
     exportLedger?(format: RemoteLedgerExportFormat): Promise<string>;
 }
 export type SessionSort = "recent" | "amount" | "status";
 export type StatusFilter = MeterStatusCode | "all";
 export type ClientPanel = "compact" | "sessions" | "detail" | "settings" | "costTree" | "analytics";
+export type AnalyticsRange = UsageOverviewRange;
 export interface MyMeterStoreUiState {
     selectedSessionId: string | null;
     activePanel: ClientPanel;
@@ -287,6 +325,7 @@ export interface MyMeterStoreUiState {
     searchQuery: string;
     sortBy: SessionSort;
     filterStatus: StatusFilter;
+    analyticsRange: AnalyticsRange;
 }
 export interface MyMeterStoreState {
     remote: MyMeterRemoteSnapshot;
@@ -297,6 +336,7 @@ export interface MyMeterStoreState {
 interface MyMeterAsyncState {
     sessionCostTree: AsyncResourceView<SessionCostTreeView>;
     costAnalytics: AsyncResourceView<CostAnalyticsView>;
+    usageOverview: AsyncResourceView<UsageOverviewView>;
     ledgerExport: LedgerExportView;
 }
 export interface MyMeterStore {
@@ -310,6 +350,7 @@ export interface MyMeterStore {
     setSearchQuery(query: string): void;
     setSortBy(sortBy: SessionSort): void;
     setFilterStatus(status: StatusFilter): void;
+    setAnalyticsRange(range: AnalyticsRange): void;
     setSettings(patch: Partial<MyMeterSettings>): void;
     resetSettings(): void;
     setReducedMotion(reducedMotion: boolean): void;
@@ -326,8 +367,10 @@ export interface MyMeterStore {
     setOverlayCollapsed(collapsed: boolean): void;
     setOverlayVisible(visible: boolean): void;
     refreshExchangeRate(): Promise<void>;
+    refreshBalance(): Promise<void>;
     loadSessionCostTree(): Promise<void>;
     loadCostAnalytics(): Promise<void>;
+    loadUsageOverview(range?: AnalyticsRange): Promise<void>;
     exportLedger(format: RemoteLedgerExportFormat): Promise<void>;
 }
 export declare const DEFAULT_STORAGE_KEY = "mymeter.settings";
