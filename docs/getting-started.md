@@ -1,6 +1,6 @@
 # 安装与使用
 
-本文面向第一次安装和验证 dsh-cost-meter 的 dsh 用户。正式包名为 `@mymeter/dsh-cost-meter`，当前 npm `latest` 为 `0.3.0`。
+本文面向第一次安装和验证 dsh-cost-meter 的 dsh 用户。正式包名为 `@mymeter/dsh-cost-meter`，当前 npm `latest` 为 `0.2.1`。
 
 > dsh-cost-meter 只做本地费用观测和估算，不是模型厂商官方账单。首次上线前请用小额真实请求与厂商控制台对账。
 
@@ -23,7 +23,7 @@ dsh plugin --profile web add @mymeter/dsh-cost-meter
 也可以固定已验证版本：
 
 ```bash
-dsh plugin --profile web add @mymeter/dsh-cost-meter@0.3.0
+dsh plugin --profile web add @mymeter/dsh-cost-meter@0.2.1
 ```
 
 如果 dsh 使用自定义 npm registry，请确认该 registry 已同步此公开包。包发布页见
@@ -40,7 +40,7 @@ npm test
 npm run build
 npm run pack:plugin
 npm run verify:package
-dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.3.0.tgz
+dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.1.tgz
 ```
 
 安装后重启或重新加载该 profile 的 dsh Web。包内 `dsh.bundle.patch` 会注册 Host，`dsh.client` 会注册 Web Client；不需要手工复制 `packages/plugin/cordis.patch.yml`。

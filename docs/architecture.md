@@ -319,7 +319,7 @@ npm run verify
 1. 检查 `packages/plugin/package.json` 的包名、public access 和导出产物。
 2. `npm pack` 插件目录到临时目录。
 3. 确认 tarball 不包含 `src/` 或 sourcemap，并且包含 `LICENSE`、`README.md`、`cordis.patch.yml` 和关键声明文件。
-4. 将仓库根目录当前版本 tarball（例如 `mymeter-dsh-cost-meter-0.3.0.tgz`）与临时 `npm pack` 的发布文件逐文件 hash 比较；比较的是解压后的 package 文件内容，不依赖 gzip/tar 元数据。
+4. 将仓库根目录当前版本 tarball（例如 `mymeter-dsh-cost-meter-0.2.1.tgz`）与临时 `npm pack` 的发布文件逐文件 hash 比较；比较的是解压后的 package 文件内容，不依赖 gzip/tar 元数据。
 5. 在临时 consumer 中 symlink 包和 React 类型，编译导入 `.`、`/host`、`/client`、`/remote`。
 6. 用 Node 动态导入发布包主入口。
 

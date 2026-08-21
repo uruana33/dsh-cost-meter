@@ -1,7 +1,7 @@
 {
   "name": "@mymeter/dsh-cost-meter",
   "description": "Provider-aware LLM cost meter and local ledger for DeepSeek Harness",
-  "version": "0.3.0",
+  "version": "0.2.1",
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.js",
