@@ -57,6 +57,13 @@ function bucketLabel(range: AnalyticsRange, key: string): string {
   return `${hour}:00`;
 }
 
+function axisLabelStep(range: AnalyticsRange, bucketCount: number): number {
+  if (bucketCount <= 8) return 1;
+  if (range === "today") return 3;
+  if (range === "7d") return 1;
+  return Math.max(1, Math.ceil(bucketCount / 8));
+}
+
 function bucketAmount(bucket: TrendBucket): string {
   return bucket.coverage === "unavailable" ? "—" : bucket.amount.label;
 }
@@ -88,6 +95,7 @@ export function AnalyticsChart({
   const slot = (width - padX * 2) / buckets.length;
   const barWidth = Math.max(4, Math.min(18, slot * 0.58));
   const maxAmount = Math.max(1, ...buckets.map((bucket) => bucket.amount.microCny));
+  const labelStep = axisLabelStep(range, buckets.length);
 
   return (
     <section aria-label={label} style={shellStyle}>
@@ -119,9 +127,11 @@ export function AnalyticsChart({
               {index === buckets.length - 1 ? (
                 <circle cx={x + barWidth / 2} cy={y} r={2.5} fill={DSH_COLORS.primary} />
               ) : null}
-              <text x={x + barWidth / 2} y={height - 6} textAnchor="middle" fill={DSH_COLORS.tertiary} fontSize="9">
-                {displayLabel}
-              </text>
+              {index % labelStep === 0 || (range !== "today" && index === buckets.length - 1) ? (
+                <text x={x + barWidth / 2} y={height - 6} textAnchor="middle" fill={DSH_COLORS.tertiary} fontSize="9">
+                  {displayLabel}
+                </text>
+              ) : null}
             </g>
           );
         })}

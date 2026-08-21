@@ -7,6 +7,7 @@ import {
   MyMeterConversationView,
   MyMeterSettingsCard,
   SessionDetailPanel,
+  AnalyticsChart,
   createMockRemote,
   createMyMeterStore,
   snapOverlayPosition,
@@ -36,6 +37,33 @@ afterEach(() => {
 });
 
 describe("overlay visual contract", () => {
+  test("keeps the hourly trend axis readable by showing spaced tick labels", () => {
+    const trend = Array.from({ length: 24 }, (_, index) => ({
+      key: String(index).padStart(2, "0"),
+      startAt: "2026-08-20T00:00:00.000Z",
+      endAt: "2026-08-20T01:00:00.000Z",
+      amount: { microCny: index * 100, label: "¥0.000", detailLabel: "¥0.000000" },
+      totalTokens: index,
+      requestCount: index,
+      coverage: "complete" as const,
+    }));
+
+    render(<AnalyticsChart range="today" trend={trend} />);
+
+    const chart = screen.getByRole("img", { name: "今日按小时费用趋势" });
+    expect(chart.querySelectorAll("rect")).toHaveLength(24);
+    expect([...chart.querySelectorAll("text")].map((item) => item.textContent)).toEqual([
+      "00:00",
+      "03:00",
+      "06:00",
+      "09:00",
+      "12:00",
+      "15:00",
+      "18:00",
+      "21:00",
+    ]);
+  });
+
   test("renders Token计费 details with the same page navigation for every entry", () => {
     const store = createMyMeterStore({
       remote: createMockRemote("billing"),
@@ -784,7 +812,7 @@ describe("overlay visual contract", () => {
     expect(analytics).toHaveTextContent("单日费用突增");
     expect(screen.getByRole("button", { name: "今日" })).toHaveAttribute("aria-pressed", "true");
 
-    expect(analytics).toHaveTextContent("10:00");
+    expect(screen.getByRole("img", { name: /10:00/ })).toBeTruthy();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "7天" }));

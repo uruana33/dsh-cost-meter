@@ -1572,6 +1572,12 @@ function bucketLabel(range, key) {
   const hour = key.match(/T(\d{2})$/u)?.[1] ?? key.slice(-2);
   return `${hour}:00`;
 }
+function axisLabelStep(range, bucketCount) {
+  if (bucketCount <= 8) return 1;
+  if (range === "today") return 3;
+  if (range === "7d") return 1;
+  return Math.max(1, Math.ceil(bucketCount / 8));
+}
 function bucketAmount(bucket) {
   return bucket.coverage === "unavailable" ? "\u2014" : bucket.amount.label;
 }
@@ -1594,6 +1600,7 @@ function AnalyticsChart({
   const slot = (width - padX * 2) / buckets.length;
   const barWidth = Math.max(4, Math.min(18, slot * 0.58));
   const maxAmount = Math.max(1, ...buckets.map((bucket) => bucket.amount.microCny));
+  const labelStep = axisLabelStep(range, buckets.length);
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { "aria-label": label, style: shellStyle, children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { minWidth: 0, overflowX: "auto" }, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("svg", { role: "img", "aria-label": label, viewBox: `0 0 ${width} ${height}`, style: { display: "block", width, minWidth: width, height: "auto" }, children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("line", { x1: padX, x2: width - padX, y1: height - padBottom, y2: height - padBottom, stroke: DSH_COLORS.border1 }),
@@ -1622,7 +1629,7 @@ function AnalyticsChart({
             }
           ),
           index === buckets.length - 1 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("circle", { cx: x + barWidth / 2, cy: y, r: 2.5, fill: DSH_COLORS.primary }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("text", { x: x + barWidth / 2, y: height - 6, textAnchor: "middle", fill: DSH_COLORS.tertiary, fontSize: "9", children: displayLabel })
+          index % labelStep === 0 || range !== "today" && index === buckets.length - 1 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("text", { x: x + barWidth / 2, y: height - 6, textAnchor: "middle", fill: DSH_COLORS.tertiary, fontSize: "9", children: displayLabel }) : null
         ] }, bucket.key);
       })
     ] }) }),
