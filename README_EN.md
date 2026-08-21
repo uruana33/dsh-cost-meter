@@ -61,7 +61,7 @@ The videos are stored in `docs/assets`. You can play them from the links below o
    dsh plugin --profile web add @mymeter/dsh-cost-meter
    ```
 
-   The current `latest` version is `0.2.0`; see the [npm package](https://www.npmjs.com/package/@mymeter/dsh-cost-meter).
+   The current `latest` version is `0.3.0`; see the [npm package](https://www.npmjs.com/package/@mymeter/dsh-cost-meter).
 
 2. For source validation or development, build, pack, and verify the tarball from this repository:
 
@@ -75,7 +75,7 @@ The videos are stored in `docs/assets`. You can play them from the links below o
 3. Install the generated local tarball:
 
    ```bash
-   dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.0.tgz
+   dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.3.0.tgz
    ```
 
 4. Restart or reload the target dsh Web profile, then open a session. Use the floating receipt in the conversation page, or open the `Token计费` conversation view for balances, stages, and token details.
@@ -112,7 +112,7 @@ See [Pricing catalog sources and coverage](docs/pricing-catalog.md) for current 
 ## Status And Limits
 
 - This is an early preview. It has passed plugin build checks, `npm run verify:package`, tarball consumer checks, and isolated dsh profile install/Web/uninstall/reinstall validation.
-- `@mymeter/dsh-cost-meter@0.2.0` is published to the npm registry. New profiles can install it directly, and existing installations can use the loopback Web UI update check. Self-update still requires a `file:` baseUrl that resolves to the local dsh profile directory.
+- `@mymeter/dsh-cost-meter@0.3.0` is published to the npm registry. New profiles can install it directly, and existing installations can use the loopback Web UI update check. Self-update still requires a `file:` baseUrl that resolves to the local dsh profile directory.
 - The final tarball has completed isolated profile validation; a real DeepSeek API key has not yet been used to reconcile production request usage and cost, and a real account balance has not yet been reconciled.
 - Pricing tables ship with code. The repository includes library-level signed-manifest validation, HTTPS downloads, SHA-256 catalog checks, and an activate/rollback seam for remote pricing updates, but the production plugin does not wire this path yet and has no official endpoint or trusted key. It therefore performs no automatic network fetch or hot catalog update.
 - CSV/JSON exports use a safe field allowlist and do not export prompts, completions, tool content, or API keys; CSV output guards against formula injection.

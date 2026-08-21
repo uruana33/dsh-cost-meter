@@ -60,6 +60,41 @@ test("price directory exposes the current deepseek-v4-flash and deepseek-v4-pro 
   }
 });
 
+test("DeepSeek V4 Flash Vision Exp uses the official Flash rates in both pricing zones", () => {
+  const directory = createDeepSeekPriceDirectory();
+  const peak = directory.lookup({
+    model: "DeepSeek-V4-Flash-Vision-Exp",
+    requestStartedAt: "2026-08-21T09:00:00+08:00",
+  });
+  const offpeak = directory.lookup({
+    model: "deepseek-v4-flash-vision-exp",
+    requestStartedAt: "2026-08-21T12:00:00+08:00",
+  });
+
+  assert.equal(directory.priceVersion, "deepseek-official-pricing-2026-08-21");
+  assert.ok(directory.listModels().includes("deepseek-v4-flash-vision-exp"));
+  assert.equal(peak.ok, true);
+  assert.equal(offpeak.ok, true);
+  if (peak.ok && offpeak.ok) {
+    assert.deepEqual(
+      [
+        peak.quote.cacheHitMicroCnyPerMillionTokens,
+        peak.quote.cacheMissMicroCnyPerMillionTokens,
+        peak.quote.outputMicroCnyPerMillionTokens,
+      ],
+      [100_000n, 3_000_000n, 9_000_000n],
+    );
+    assert.deepEqual(
+      [
+        offpeak.quote.cacheHitMicroCnyPerMillionTokens,
+        offpeak.quote.cacheMissMicroCnyPerMillionTokens,
+        offpeak.quote.outputMicroCnyPerMillionTokens,
+      ],
+      [50_000n, 1_500_000n, 4_500_000n],
+    );
+  }
+});
+
 test("xAI price directory uses the official Grok rates without peak/offpeak pricing", () => {
   const directory = createXaiPriceDirectory();
   const result = directory.lookup({ model: "grok-4.6" });
@@ -177,7 +212,7 @@ test("calculation uses exact micro-cny arithmetic and does not double count reas
 
   assert.equal(result.status, "settled");
   assert.equal(result.pricingZone, "offpeak");
-  assert.equal(result.priceVersion, "deepseek-official-pricing-2026-08-17");
+  assert.equal(result.priceVersion, "deepseek-official-pricing-2026-08-21");
   assert.equal(result.amountMicroCny, 6_050_000n);
   assert.equal(result.currency, "CNY");
   assert.equal(result.amountMinor, 6_050_000n);

@@ -14,10 +14,11 @@
 - 修复会话与费用树入口错误回到会话详情的问题。
 - 余额刷新失败时保留最近一次可用结果并展示明确状态。
 
-## Unreleased
+## 0.3.0 - 2026-08-21
 
 ### Added
 
+- 更新 DeepSeek 官方价格快照至 `deepseek-official-pricing-2026-08-21`，新增 `deepseek-v4-flash-vision-exp` 峰谷计费；图片由 DeepSeek 换算成输入 Token 后与文本一并计费。
 - 发布包统一命名为 `@mymeter/dsh-cost-meter`，新增 dsh invariant、声明文件、tarball 消费者检查与 CI 发布门禁。
 - JSON 文件账本恢复现在会报告隔离位置，跳过并隔离损坏事件，并合并同一进程中指向相同路径的多个 repository 写入。
 - 新增 `ledgerFormat: append` 显式 opt-in；默认仍为 `json`，JSON 到 append 会生成 `<ledgerPath>.legacy.json`，append 切回 JSON 会安全导出 schema-v1 JSON。

@@ -187,7 +187,7 @@ function usdRatesToCny(rates) {
 
 // packages/core/src/pricing/versions.ts
 var PRICING_CATALOG_VERSIONS = {
-  deepseek: "deepseek-official-pricing-2026-08-17",
+  deepseek: "deepseek-official-pricing-2026-08-21",
   xai: "xai-official-pricing-2026-08-18-usd",
   openai: "openai-official-pricing-2026-08-18-usd",
   anthropic: "anthropic-official-pricing-2026-08-18-usd",
@@ -665,6 +665,18 @@ var DEEPSEEK_PRICE_TABLE = {
       cacheHitMicroCnyPerMillionTokens: 150000n,
       cacheMissMicroCnyPerMillionTokens: 4500000n,
       outputMicroCnyPerMillionTokens: 13500000n
+    }
+  },
+  "deepseek-v4-flash-vision-exp": {
+    peak: {
+      cacheHitMicroCnyPerMillionTokens: 100000n,
+      cacheMissMicroCnyPerMillionTokens: 3000000n,
+      outputMicroCnyPerMillionTokens: 9000000n
+    },
+    offpeak: {
+      cacheHitMicroCnyPerMillionTokens: 50000n,
+      cacheMissMicroCnyPerMillionTokens: 1500000n,
+      outputMicroCnyPerMillionTokens: 4500000n
     }
   }
 };

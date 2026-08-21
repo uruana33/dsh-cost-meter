@@ -1,6 +1,6 @@
 # 价格目录来源与覆盖范围
 
-更新时间：2026-08-19
+更新时间：2026-08-21
 
 价格目录是随插件发布的版本化快照，不在每次请求时访问厂商官网。这样可以保证历史账单在价格调整后仍能重放。国内价格表保留 CNY，海外价格表保留 USD；价格版本不包含汇率。混合币种的人民币折算由单独的 USD/CNY 汇率快照提供，用户触发“查询最新汇率”后才更新展示值。费率以本地快照为准，官网仅用于人工复核和更新，不构成运行时价格数据源。
 
@@ -32,6 +32,21 @@ dsh 的 `llm-pi-ai` 使用 `@earendil-works/pi-ai` 的内置 provider/model cata
 | `together` | `together.ts` | [Together Pricing](https://www.together.ai/pricing) |
 | `fireworks` | `fireworks.ts` | [Fireworks Pricing](https://docs.fireworks.ai/serverless/pricing) |
 | `cerebras` | `cerebras.ts` | [Cerebras Pricing](https://inference-docs.cerebras.ai/support/pricing.md) |
+
+### DeepSeek 价格快照
+
+`deepseek-official-pricing-2026-08-21` 覆盖 `deepseek-v4-flash`、`deepseek-v4-pro` 和 `deepseek-v4-flash-vision-exp`。币种为人民币，以下单价均为每百万 Token；空闲时段价格为高峰时段的一半。
+
+| 模型 | 时段 | 缓存命中输入 | 缓存未命中输入 | 输出 |
+| --- | --- | ---: | ---: | ---: |
+| `deepseek-v4-flash` | 高峰 | ¥0.10 | ¥3.00 | ¥9.00 |
+| `deepseek-v4-flash` | 空闲 | ¥0.05 | ¥1.50 | ¥4.50 |
+| `deepseek-v4-pro` | 高峰 | ¥0.30 | ¥9.00 | ¥27.00 |
+| `deepseek-v4-pro` | 空闲 | ¥0.15 | ¥4.50 | ¥13.50 |
+| `deepseek-v4-flash-vision-exp` | 高峰 | ¥0.10 | ¥3.00 | ¥9.00 |
+| `deepseek-v4-flash-vision-exp` | 空闲 | ¥0.05 | ¥1.50 | ¥4.50 |
+
+高峰时段为北京时间 09:00-12:00、14:00-18:00，其余为空闲时段。视觉模型接收的图片由 DeepSeek 按尺寸换算成输入 Token，再与文本 Token 一并计费；本项目直接使用 provider 返回的 Token 用量，不另行估算图片 Token。
 
 ## Route 的 API 等价估算
 

@@ -4,7 +4,7 @@
  * provider's native price card.
  */
 export const PRICING_CATALOG_VERSIONS = {
-  deepseek: "deepseek-official-pricing-2026-08-17",
+  deepseek: "deepseek-official-pricing-2026-08-21",
   xai: "xai-official-pricing-2026-08-18-usd",
   openai: "openai-official-pricing-2026-08-18-usd",
   anthropic: "anthropic-official-pricing-2026-08-18-usd",

@@ -22,7 +22,7 @@ Provider-aware LLM cost metering, local ledger, balance display, and dsh Web UI 
 
 ## Install
 
-The package is published to the npm registry as `0.2.0`:
+The package is published to the npm registry as `0.3.0`:
 
 ```sh
 dsh plugin --profile web add @mymeter/dsh-cost-meter
@@ -35,7 +35,7 @@ npm ci
 npm run build
 npm run pack:plugin
 npm run verify:package
-dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.0.tgz
+dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.3.0.tgz
 ```
 
 The package ships prebuilt Host, Client, Remote, invariant, and declaration artifacts. Direct Git installation is not supported because the source build depends on this repository's workspaces.
