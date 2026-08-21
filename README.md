@@ -61,7 +61,7 @@ Token 计费页按会话展示余额、会话总费用、预算状态、缓存�
    dsh plugin --profile web add @mymeter/dsh-cost-meter
    ```
 
-   当前 `latest` 版本为 `0.1.0`，详见 [npm package](https://www.npmjs.com/package/@mymeter/dsh-cost-meter)。
+   当前 `latest` 版本为 `0.2.0`，详见 [npm package](https://www.npmjs.com/package/@mymeter/dsh-cost-meter)。
 
 2. 如需从源码验证或参与开发，再在本仓库构建、打包并验证 tarball：
 
@@ -75,7 +75,7 @@ Token 计费页按会话展示余额、会话总费用、预算状态、缓存�
 3. 安装生成的本地 tarball：
 
    ```bash
-   dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.1.0.tgz
+   dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.0.tgz
    ```
 
 4. 重启或重新加载对应 dsh Web profile，打开一个会话；在会话页面查看右侧浮动小票，或打开 `Token计费` 会话页查看余额、阶段和 Token 明细。
@@ -111,7 +111,7 @@ Token 计费页按会话展示余额、会话总费用、预算状态、缓存�
 ## 状态与限制
 
 - 当前是早期基础版，已经通过插件构建、`npm run verify:package`、tarball 消费者检查和隔离 dsh profile 的安装/Web/卸载/重装验收。
-- `@mymeter/dsh-cost-meter@0.1.0` 已发布到 npm registry；新 profile 可直接使用 npm 安装，已安装用户可在 loopback Web UI 中检查更新。自更新仍要求当前 dsh profile 使用可解析本地目录的 `file:` baseUrl。
+- `@mymeter/dsh-cost-meter@0.2.0` 已发布到 npm registry；新 profile 可直接使用 npm 安装，已安装用户可在 loopback Web UI 中检查更新。自更新仍要求当前 dsh profile 使用可解析本地目录的 `file:` baseUrl。
 - 最终 tarball 已完成隔离 profile 验收；尚未使用真实 DeepSeek API Key 完成生产请求 usage/金额对账，也尚未用真实账户核对余额数值。
 - 价格表随代码发布；仓库提供远程价格更新的签名清单验证、HTTPS 下载、SHA-256 校验和 activate/rollback 库级能力，但生产插件尚未接线，也没有官方 endpoint/trusted key，默认不会自动联网或热更新目录。
 - CSV/JSON 导出只包含安全字段 allowlist，不导出 prompt、completion、工具正文或 API Key；CSV 会防护公式注入。
