@@ -318,6 +318,7 @@ export interface RemoteUsageOverviewTrendBucket extends RemoteUsageOverviewTotal
   key: string;
   startAt: string;
   endAt: string;
+  models?: RemoteUsageOverviewModelSummary[] | undefined;
 }
 
 export interface RemoteUsageOverviewModelSummary extends RemoteUsageOverviewTotal {
@@ -1330,6 +1331,16 @@ function mapUsageOverview(report: RemoteUsageOverviewReport): UsageOverviewView 
       totalTokens: bucket.totalTokens,
       requestCount: bucket.requestCount,
       coverage: bucket.coverage,
+      models: (bucket.models ?? []).map((model) => ({
+        provider: model.provider,
+        model: model.model,
+        amount: createAmountView(model.amountMicroCny),
+        totalTokens: model.totalTokens,
+        requestCount: model.requestCount,
+        pricedRequestCount: model.pricedRequestCount,
+        unknownRequestCount: model.unknownRequestCount,
+        coverage: model.coverage,
+      })),
     })),
     topModels: report.topModels.map((model) => ({
       provider: model.provider,

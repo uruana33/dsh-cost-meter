@@ -604,6 +604,9 @@ function parseUsageOverviewReport(value: unknown): RemoteUsageOverviewReport {
         startAt: timestamp(bucket.startAt, `usageOverview.trend[${index}].startAt`),
         endAt: timestamp(bucket.endAt, `usageOverview.trend[${index}].endAt`),
         ...parseUsageOverviewTotal(bucket, `usageOverview.trend[${index}]`),
+        models: bucket.models === undefined
+          ? []
+          : parseUsageOverviewModels(bucket.models, `usageOverview.trend[${index}].models`),
       };
     }),
     topModels: topModels.map((item, index) => {
@@ -615,6 +618,17 @@ function parseUsageOverviewReport(value: unknown): RemoteUsageOverviewReport {
       };
     }),
   };
+}
+
+function parseUsageOverviewModels(value: unknown, field: string): RemoteUsageOverviewReport["trend"][number]["models"] {
+  return array(value, field).map((item, index) => {
+    const model = object(item, `${field}[${index}]`);
+    return {
+      provider: boundedString(model.provider, `${field}[${index}].provider`, 120),
+      model: boundedString(model.model, `${field}[${index}].model`, 240),
+      ...parseUsageOverviewTotal(model, `${field}[${index}]`),
+    };
+  });
 }
 
 function parseUsageOverviewTotal(value: unknown, field: string): RemoteUsageOverviewReport["totals"] {

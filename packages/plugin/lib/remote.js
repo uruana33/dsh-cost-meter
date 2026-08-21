@@ -455,7 +455,8 @@ function parseUsageOverviewReport(value) {
         key: boundedString(bucket.key, `usageOverview.trend[${index}].key`, 32),
         startAt: timestamp(bucket.startAt, `usageOverview.trend[${index}].startAt`),
         endAt: timestamp(bucket.endAt, `usageOverview.trend[${index}].endAt`),
-        ...parseUsageOverviewTotal(bucket, `usageOverview.trend[${index}]`)
+        ...parseUsageOverviewTotal(bucket, `usageOverview.trend[${index}]`),
+        models: bucket.models === void 0 ? [] : parseUsageOverviewModels(bucket.models, `usageOverview.trend[${index}].models`)
       };
     }),
     topModels: topModels.map((item, index) => {
@@ -467,6 +468,16 @@ function parseUsageOverviewReport(value) {
       };
     })
   };
+}
+function parseUsageOverviewModels(value, field) {
+  return array(value, field).map((item, index) => {
+    const model = object(item, `${field}[${index}]`);
+    return {
+      provider: boundedString(model.provider, `${field}[${index}].provider`, 120),
+      model: boundedString(model.model, `${field}[${index}].model`, 240),
+      ...parseUsageOverviewTotal(model, `${field}[${index}]`)
+    };
+  });
 }
 function parseUsageOverviewTotal(value, field) {
   const record = object(value, field);

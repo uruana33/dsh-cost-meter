@@ -41,6 +41,16 @@ const labelRowStyle: CSSProperties = {
 };
 
 type TrendBucket = UsageOverviewView["trend"][number];
+type TrendModel = TrendBucket["models"][number];
+
+const MODEL_COLORS = [
+  "var(--dsw-alias-brand-primary, #2563eb)",
+  "var(--dsw-alias-state-success-primary, #059669)",
+  "var(--dsw-alias-state-warning-primary, #d97706)",
+  "var(--dsw-alias-state-error-primary, #dc2626)",
+  "var(--dsw-alias-state-info-primary, #0891b2)",
+  "var(--dsw-alias-label-secondary, #7c3aed)",
+] as const;
 
 function chartBuckets(range: AnalyticsRange, trend: readonly TrendBucket[]): readonly TrendBucket[] {
   return range === "today" ? trend.slice(-24) : trend.slice(range === "7d" ? -7 : -30);
@@ -55,6 +65,14 @@ function bucketLabel(range: AnalyticsRange, key: string): string {
   if (range !== "today") return key;
   const hour = key.match(/T(\d{2})$/u)?.[1] ?? key.slice(-2);
   return `${hour}:00`;
+}
+
+function modelKey(model: Pick<TrendModel, "provider" | "model">): string {
+  return `${model.provider}\u0000${model.model}`;
+}
+
+function modelLabel(model: Pick<TrendModel, "provider" | "model">): string {
+  return model.provider && model.provider !== "unknown" ? `${model.provider} · ${model.model}` : model.model;
 }
 
 function axisLabelStep(range: AnalyticsRange, bucketCount: number): number {
@@ -86,44 +104,100 @@ export function AnalyticsChart({
     );
   }
 
-  const width = Math.max(320, buckets.length * 22);
-  const height = 118;
+  // Keep the drawing surface stable while the bucket count changes by range.
+  const width = 640;
+  const height = 132;
   const padX = 8;
   const padTop = 10;
-  const padBottom = 20;
+  const padBottom = 22;
   const plotHeight = height - padTop - padBottom;
   const slot = (width - padX * 2) / buckets.length;
-  const barWidth = Math.max(4, Math.min(18, slot * 0.58));
+  const barWidth = Math.max(4, Math.min(32, slot * 0.58));
   const maxAmount = Math.max(1, ...buckets.map((bucket) => bucket.amount.microCny));
   const labelStep = axisLabelStep(range, buckets.length);
+  const modelLegend = [...new Map(
+    buckets
+      .flatMap((bucket) => bucket.models)
+      .filter((model) => model.amount.microCny > 0)
+      .map((model) => [modelKey(model), model] as const),
+  ).values()].sort((left, right) => modelKey(left).localeCompare(modelKey(right)));
+  const modelColors = new Map(modelLegend.map((model, index) => [modelKey(model), MODEL_COLORS[index % MODEL_COLORS.length]]));
 
   return (
     <section aria-label={label} style={shellStyle}>
-      <div style={{ minWidth: 0, overflowX: "auto" }}>
-      <svg role="img" aria-label={label} viewBox={`0 0 ${width} ${height}`} style={{ display: "block", width, minWidth: width, height: "auto" }}>
+      <div style={{ minWidth: 0 }}>
+      <svg role="img" aria-label={label} viewBox={`0 0 ${width} ${height}`} style={{ display: "block", width: "100%", height: "auto", aspectRatio: `${width} / ${height}` }}>
         <line x1={padX} x2={width - padX} y1={height - padBottom} y2={height - padBottom} stroke={DSH_COLORS.border1} />
         {buckets.map((bucket, index) => {
           const value = bucket.amount.microCny;
-          const barHeight = Math.max(2, (value / maxAmount) * plotHeight);
+          const barHeight = value > 0 ? Math.max(2, (value / maxAmount) * plotHeight) : 2;
           const x = padX + index * slot + (slot - barWidth) / 2;
           const y = height - padBottom - barHeight;
           const displayLabel = bucketLabel(range, bucket.key);
+          const modelSegments = bucket.models.filter((model) => model.amount.microCny > 0 && modelColors.has(modelKey(model)));
+          const modelTotal = modelSegments.reduce((sum, model) => sum + model.amount.microCny, 0);
+          const scale = modelTotal > value && modelTotal > 0 ? value / modelTotal : 1;
+          let segmentBottom = height - padBottom;
           return (
             <g key={bucket.key}>
               <title>{`${displayLabel} · ${bucketAmount(bucket)} · ${bucket.requestCount} 次`}</title>
-              <rect
-                x={x}
-                y={y}
-                width={barWidth}
-                height={barHeight}
-                rx={2}
-                fill={selectedKey === bucket.key ? DSH_COLORS.primary : DSH_COLORS.brand}
-                tabIndex={0}
-                role="img"
-                aria-label={`${displayLabel} ${bucketAmount(bucket)}，${bucket.totalTokens} Token，${bucket.requestCount} 次请求`}
-                onFocus={() => setSelectedKey(bucket.key)}
-                onClick={() => setSelectedKey(bucket.key)}
-              />
+              {modelSegments.length === 0 ? (
+                <rect
+                  x={x}
+                  y={y}
+                  width={barWidth}
+                  height={barHeight}
+                  rx={2}
+                  fill={selectedKey === bucket.key ? DSH_COLORS.primary : DSH_COLORS.brand}
+                  tabIndex={0}
+                  role="img"
+                  aria-label={`${displayLabel} ${bucketAmount(bucket)}，${bucket.totalTokens} Token，${bucket.requestCount} 次请求`}
+                  onFocus={() => setSelectedKey(bucket.key)}
+                  onClick={() => setSelectedKey(bucket.key)}
+                />
+              ) : (
+                <>
+                  {modelTotal < value ? (() => {
+                    const remainderHeight = ((value - modelTotal) / maxAmount) * plotHeight;
+                    segmentBottom -= remainderHeight;
+                    return (
+                      <rect
+                        x={x}
+                        y={segmentBottom}
+                        width={barWidth}
+                        height={remainderHeight}
+                        rx={2}
+                        fill={selectedKey === bucket.key ? DSH_COLORS.primary : DSH_COLORS.brand}
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        onFocus={() => setSelectedKey(bucket.key)}
+                        onClick={() => setSelectedKey(bucket.key)}
+                      />
+                    );
+                  })() : null}
+                  {modelSegments.map((model, segmentIndex) => {
+                    const segmentHeight = Math.max(1, ((model.amount.microCny * scale) / maxAmount) * plotHeight);
+                    segmentBottom -= segmentHeight;
+                    const modelName = modelLabel(model);
+                    return (
+                      <rect
+                        key={modelKey(model)}
+                        x={x}
+                        y={segmentBottom}
+                        width={barWidth}
+                        height={segmentHeight}
+                        rx={segmentIndex === modelSegments.length - 1 ? 2 : 0}
+                        fill={selectedKey === bucket.key ? DSH_COLORS.primary : modelColors.get(modelKey(model))}
+                        tabIndex={segmentIndex === 0 ? 0 : -1}
+                        role={segmentIndex === 0 ? "img" : undefined}
+                        aria-label={segmentIndex === 0 ? `${displayLabel} ${modelName} ${bucketAmount(bucket)}，${bucket.totalTokens} Token，${bucket.requestCount} 次请求` : undefined}
+                        onFocus={() => setSelectedKey(bucket.key)}
+                        onClick={() => setSelectedKey(bucket.key)}
+                      />
+                    );
+                  })}
+                </>
+              )}
               {index === buckets.length - 1 ? (
                 <circle cx={x + barWidth / 2} cy={y} r={2.5} fill={DSH_COLORS.primary} />
               ) : null}
@@ -137,6 +211,16 @@ export function AnalyticsChart({
         })}
       </svg>
       </div>
+      {modelLegend.length > 1 ? (
+        <div role="list" aria-label="模型图例" style={{ display: "flex", flexWrap: "wrap", gap: "4px 10px", color: DSH_COLORS.secondary, fontSize: 10 }}>
+          {modelLegend.map((model) => (
+            <span key={modelKey(model)} role="listitem" style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+              <span aria-hidden="true" style={{ width: 8, height: 8, flex: "0 0 auto", borderRadius: 2, background: modelColors.get(modelKey(model)) }} />
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{modelLabel(model)}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
       {selectedKey ? (
         <p style={{ margin: 0, color: DSH_COLORS.secondary, fontSize: 10, fontVariantNumeric: "tabular-nums" }}>
           {(() => {

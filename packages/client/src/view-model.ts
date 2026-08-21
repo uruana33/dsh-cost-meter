@@ -228,6 +228,16 @@ export interface UsageOverviewView {
     totalTokens: number;
     requestCount: number;
     coverage: "complete" | "partial" | "unavailable";
+    models: Array<{
+      provider: string;
+      model: string;
+      amount: AmountView;
+      totalTokens: number;
+      requestCount: number;
+      pricedRequestCount: number;
+      unknownRequestCount: number;
+      coverage: "complete" | "partial" | "unavailable";
+    }>;
   }>;
   topModels: Array<{
     provider: string;

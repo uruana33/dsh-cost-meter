@@ -37,6 +37,7 @@ export interface UsageOverviewTrendBucket extends UsageOverviewTotal {
   readonly key: string;
   readonly startAt: string;
   readonly endAt: string;
+  readonly models: UsageOverviewModelSummary[];
 }
 
 export interface UsageOverviewModelSummary extends UsageOverviewTotal {
@@ -81,6 +82,11 @@ interface MutableUsageTotal {
   unknownRequestCount: number;
 }
 
+interface MutableUsageModel extends MutableUsageTotal {
+  provider: string;
+  model: string;
+}
+
 const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 const KNOWN_COST_STATUSES = new Set<UsageOverviewCostStatus>(["estimated", "settled", "failed"]);
 
@@ -99,6 +105,7 @@ export function createUsageOverview(
     ? Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, "0"))
     : dayKeys;
   const buckets = new Map(bucketKeys.map((key) => [key, emptyMutableTotal()]));
+  const bucketModels = new Map<string, Map<string, MutableUsageModel>>();
   const totals = emptyMutableTotal();
   const models = new Map<string, MutableUsageTotal & { provider: string; model: string }>();
 
@@ -113,6 +120,16 @@ export function createUsageOverview(
     if (!bucket) continue;
     addEvent(bucket, event);
     addEvent(totals, event);
+    const modelsForBucket = bucketModels.get(bucketKey) ?? new Map<string, MutableUsageModel>();
+    const bucketModelKey = `${event.provider}\u0000${event.model}`;
+    const bucketModel = modelsForBucket.get(bucketModelKey) ?? {
+      provider: event.provider,
+      model: event.model,
+      ...emptyMutableTotal(),
+    };
+    addEvent(bucketModel, event);
+    modelsForBucket.set(bucketModelKey, bucketModel);
+    bucketModels.set(bucketKey, modelsForBucket);
     const modelKey = `${event.provider}\u0000${event.model}`;
     const model = models.get(modelKey) ?? {
       provider: event.provider,
@@ -128,7 +145,12 @@ export function createUsageOverview(
     const bounds = range === "today"
       ? hourBounds(today, Number(key), timeZone)
       : dayBounds(key, timeZone);
-    return { key, ...bounds, ...total };
+    return {
+      key,
+      ...bounds,
+      ...total,
+      models: sortModelSummaries(bucketModels.get(key)),
+    };
   });
   const rangeStart = dayBounds(dayKeys[0]!, timeZone).startAt;
   const rangeEnd = dayBounds(nextDayKey(dayKeys.at(-1)!), timeZone).startAt;
@@ -157,6 +179,21 @@ export function createUsageOverview(
     trend,
     topModels,
   };
+}
+
+function sortModelSummaries(models: Map<string, MutableUsageModel> | undefined): UsageOverviewModelSummary[] {
+  return [...(models?.values() ?? [])]
+    .map((model): UsageOverviewModelSummary => ({
+      provider: model.provider,
+      model: model.model,
+      ...toTotal(model),
+    }))
+    .sort((left, right) =>
+      right.amountMicroCny - left.amountMicroCny
+      || right.totalTokens - left.totalTokens
+      || left.model.localeCompare(right.model)
+      || left.provider.localeCompare(right.provider)
+    );
 }
 
 function normalizeEvent(input: UsageOverviewEventInput): NormalizedUsageEvent | null {

@@ -1039,6 +1039,7 @@ function createUsageOverview(events, options = { range: "today" }) {
   const allowedDays = new Set(dayKeys);
   const bucketKeys = range === "today" ? Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, "0")) : dayKeys;
   const buckets = new Map(bucketKeys.map((key) => [key, emptyMutableTotal()]));
+  const bucketModels = /* @__PURE__ */ new Map();
   const totals = emptyMutableTotal();
   const models = /* @__PURE__ */ new Map();
   for (const input of events) {
@@ -1052,6 +1053,16 @@ function createUsageOverview(events, options = { range: "today" }) {
     if (!bucket) continue;
     addEvent(bucket, event);
     addEvent(totals, event);
+    const modelsForBucket = bucketModels.get(bucketKey) ?? /* @__PURE__ */ new Map();
+    const bucketModelKey = `${event.provider}\0${event.model}`;
+    const bucketModel = modelsForBucket.get(bucketModelKey) ?? {
+      provider: event.provider,
+      model: event.model,
+      ...emptyMutableTotal()
+    };
+    addEvent(bucketModel, event);
+    modelsForBucket.set(bucketModelKey, bucketModel);
+    bucketModels.set(bucketKey, modelsForBucket);
     const modelKey = `${event.provider}\0${event.model}`;
     const model = models.get(modelKey) ?? {
       provider: event.provider,
@@ -1064,7 +1075,12 @@ function createUsageOverview(events, options = { range: "today" }) {
   const trend = bucketKeys.map((key) => {
     const total = toTotal2(buckets.get(key) ?? emptyMutableTotal());
     const bounds = range === "today" ? hourBounds(today, Number(key), timeZone) : dayBounds(key, timeZone);
-    return { key, ...bounds, ...total };
+    return {
+      key,
+      ...bounds,
+      ...total,
+      models: sortModelSummaries(bucketModels.get(key))
+    };
   });
   const rangeStart = dayBounds(dayKeys[0], timeZone).startAt;
   const rangeEnd = dayBounds(nextDayKey(dayKeys.at(-1)), timeZone).startAt;
@@ -1086,6 +1102,15 @@ function createUsageOverview(events, options = { range: "today" }) {
     trend,
     topModels
   };
+}
+function sortModelSummaries(models) {
+  return [...models?.values() ?? []].map((model) => ({
+    provider: model.provider,
+    model: model.model,
+    ...toTotal2(model)
+  })).sort(
+    (left, right) => right.amountMicroCny - left.amountMicroCny || right.totalTokens - left.totalTokens || left.model.localeCompare(right.model) || left.provider.localeCompare(right.provider)
+  );
 }
 function normalizeEvent(input) {
   const at = new Date(input.requestStartedAt);
@@ -4319,7 +4344,7 @@ import { useEffect as useEffect2, useLayoutEffect, useMemo as useMemo2, useState
 
 // packages/client/src/analytics-chart.tsx
 import { useState } from "react";
-import { jsx, jsxs } from "react/jsx-runtime";
+import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 var DSH_COLORS = {
   primary: "var(--dsw-alias-label-primary, #111827)",
   secondary: "var(--dsw-alias-label-secondary, #4b5563)",
@@ -4355,7 +4380,7 @@ var labelRowStyle = {
 
 // packages/client/src/session-stages.tsx
 import { useEffect, useMemo, useState as useState2 } from "react";
-import { Fragment, jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
+import { Fragment as Fragment2, jsx as jsx2, jsxs as jsxs2 } from "react/jsx-runtime";
 var DSH_COLORS2 = {
   primary: "var(--dsw-alias-label-primary, #111827)",
   secondary: "var(--dsw-alias-label-secondary, #4b5563)",
@@ -4444,7 +4469,7 @@ var valueStyle = {
 };
 
 // packages/client/src/components.tsx
-import { Fragment as Fragment2, jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
+import { Fragment as Fragment3, jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
 
 // packages/client/src/update-controller.ts
 var MYMETER_UPDATE_RPC_ENDPOINTS = Object.freeze({
@@ -4957,7 +4982,8 @@ function parseUsageOverviewReport(value) {
         key: boundedString(bucket.key, `usageOverview.trend[${index}].key`, 32),
         startAt: timestamp(bucket.startAt, `usageOverview.trend[${index}].startAt`),
         endAt: timestamp(bucket.endAt, `usageOverview.trend[${index}].endAt`),
-        ...parseUsageOverviewTotal(bucket, `usageOverview.trend[${index}]`)
+        ...parseUsageOverviewTotal(bucket, `usageOverview.trend[${index}]`),
+        models: bucket.models === void 0 ? [] : parseUsageOverviewModels(bucket.models, `usageOverview.trend[${index}].models`)
       };
     }),
     topModels: topModels.map((item, index) => {
@@ -4969,6 +4995,16 @@ function parseUsageOverviewReport(value) {
       };
     })
   };
+}
+function parseUsageOverviewModels(value, field) {
+  return array(value, field).map((item, index) => {
+    const model = object(item, `${field}[${index}]`);
+    return {
+      provider: boundedString(model.provider, `${field}[${index}].provider`, 120),
+      model: boundedString(model.model, `${field}[${index}].model`, 240),
+      ...parseUsageOverviewTotal(model, `${field}[${index}]`)
+    };
+  });
 }
 function parseUsageOverviewTotal(value, field) {
   const record = object(value, field);

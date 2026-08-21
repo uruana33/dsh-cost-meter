@@ -339,6 +339,12 @@ describe("MyMeter store and mock remote", () => {
     });
     expect(store.getState().viewModel.usageOverview.status).toBe("ready");
     expect(store.getState().viewModel.usageOverview.data?.range).toBe("today");
+    expect(store.getState().viewModel.usageOverview.data?.trend.at(-1)?.models).toEqual([
+      expect.objectContaining({
+        provider: "deepseek",
+        model: "deepseek-chat",
+      }),
+    ]);
     expect(getUsageOverview).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -830,6 +836,16 @@ function usageOverviewReport(range: "today" | "7d" | "30d") {
     pricedRequestCount: index === count - 1 ? 1 : 0,
     unknownRequestCount: 0,
     coverage: index === count - 1 ? "complete" as const : "unavailable" as const,
+    models: index === count - 1 ? [{
+      provider: "deepseek",
+      model: "deepseek-chat",
+      amountMicroCny: 120_000,
+      totalTokens: 12_000,
+      requestCount: 1,
+      pricedRequestCount: 1,
+      unknownRequestCount: 0,
+      coverage: "complete" as const,
+    }] : [],
   }));
   return {
     range,

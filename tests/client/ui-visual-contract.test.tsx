@@ -46,6 +46,7 @@ describe("overlay visual contract", () => {
       totalTokens: index,
       requestCount: index,
       coverage: "complete" as const,
+      models: [],
     }));
 
     render(<AnalyticsChart range="today" trend={trend} />);
@@ -62,6 +63,44 @@ describe("overlay visual contract", () => {
       "18:00",
       "21:00",
     ]);
+  });
+
+  test("uses model colors and keeps the chart drawing surface stable across ranges", () => {
+    const amount = (microCny: number) => ({ microCny, label: `¥${(microCny / 1_000_000).toFixed(3)}`, detailLabel: `¥${(microCny / 1_000_000).toFixed(6)}` });
+    const model = (provider: string, name: string, microCny: number) => ({
+      provider,
+      model: name,
+      amount: amount(microCny),
+      totalTokens: microCny,
+      requestCount: 1,
+      pricedRequestCount: 1,
+      unknownRequestCount: 0,
+      coverage: "complete" as const,
+    });
+    const today = Array.from({ length: 24 }, (_, index) => ({
+      key: String(index).padStart(2, "0"),
+      startAt: "2026-08-20T00:00:00.000Z",
+      endAt: "2026-08-20T01:00:00.000Z",
+      amount: amount(index === 0 ? 150 : 0),
+      totalTokens: index === 0 ? 150 : 0,
+      requestCount: index === 0 ? 2 : 0,
+      coverage: index === 0 ? "complete" as const : "unavailable" as const,
+      models: index === 0 ? [model("deepseek", "deepseek-chat", 100), model("openai", "gpt-4.1", 50)] : [],
+    }));
+    const sevenDays = today.slice(0, 7).map((bucket, index) => ({ ...bucket, key: `2026-08-${String(index + 14).padStart(2, "0")}` }));
+    const thirtyDays = Array.from({ length: 30 }, (_, index) => ({ ...today[0]!, key: `2026-08-${String(index + 1).padStart(2, "0")}`, models: [] }));
+
+    const { rerender } = render(<AnalyticsChart range="today" trend={today} />);
+    const chart = screen.getByRole("img", { name: "今日按小时费用趋势" });
+    expect(screen.getByRole("list", { name: "模型图例" })).toHaveTextContent("deepseek · deepseek-chat");
+    expect(screen.getByRole("list", { name: "模型图例" })).toHaveTextContent("openai · gpt-4.1");
+    expect(new Set([...chart.querySelectorAll("rect")].map((item) => item.getAttribute("fill"))).size).toBeGreaterThan(1);
+    expect(chart.getAttribute("viewBox")).toBe("0 0 640 132");
+
+    rerender(<AnalyticsChart range="7d" trend={sevenDays} />);
+    expect(screen.getByRole("img", { name: "7天按天费用趋势" }).getAttribute("viewBox")).toBe("0 0 640 132");
+    rerender(<AnalyticsChart range="30d" trend={thirtyDays} />);
+    expect(screen.getByRole("img", { name: "30天按天费用趋势" }).getAttribute("viewBox")).toBe("0 0 640 132");
   });
 
   test("renders Token计费 details with the same page navigation for every entry", () => {

@@ -274,6 +274,7 @@ export interface RemoteUsageOverviewTrendBucket extends RemoteUsageOverviewTotal
     key: string;
     startAt: string;
     endAt: string;
+    models?: RemoteUsageOverviewModelSummary[] | undefined;
 }
 export interface RemoteUsageOverviewModelSummary extends RemoteUsageOverviewTotal {
     provider: string;

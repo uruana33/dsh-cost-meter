@@ -1223,7 +1223,17 @@ function mapUsageOverview(report) {
       amount: createAmountView(bucket.amountMicroCny),
       totalTokens: bucket.totalTokens,
       requestCount: bucket.requestCount,
-      coverage: bucket.coverage
+      coverage: bucket.coverage,
+      models: (bucket.models ?? []).map((model) => ({
+        provider: model.provider,
+        model: model.model,
+        amount: createAmountView(model.amountMicroCny),
+        totalTokens: model.totalTokens,
+        requestCount: model.requestCount,
+        pricedRequestCount: model.pricedRequestCount,
+        unknownRequestCount: model.unknownRequestCount,
+        coverage: model.coverage
+      }))
     })),
     topModels: report.topModels.map((model) => ({
       provider: model.provider,
@@ -1560,6 +1570,14 @@ var labelRowStyle = {
   fontSize: 9,
   fontVariantNumeric: "tabular-nums"
 };
+var MODEL_COLORS = [
+  "var(--dsw-alias-brand-primary, #2563eb)",
+  "var(--dsw-alias-state-success-primary, #059669)",
+  "var(--dsw-alias-state-warning-primary, #d97706)",
+  "var(--dsw-alias-state-error-primary, #dc2626)",
+  "var(--dsw-alias-state-info-primary, #0891b2)",
+  "var(--dsw-alias-label-secondary, #7c3aed)"
+];
 function chartBuckets(range, trend) {
   return range === "today" ? trend.slice(-24) : trend.slice(range === "7d" ? -7 : -30);
 }
@@ -1571,6 +1589,12 @@ function bucketLabel(range, key) {
   if (range !== "today") return key;
   const hour = key.match(/T(\d{2})$/u)?.[1] ?? key.slice(-2);
   return `${hour}:00`;
+}
+function modelKey(model) {
+  return `${model.provider}\0${model.model}`;
+}
+function modelLabel(model) {
+  return model.provider && model.provider !== "unknown" ? `${model.provider} \xB7 ${model.model}` : model.model;
 }
 function axisLabelStep(range, bucketCount) {
   if (bucketCount <= 8) return 1;
@@ -1591,28 +1615,36 @@ function AnalyticsChart({
   if (buckets.length === 0) {
     return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { "aria-label": label, style: shellStyle, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { style: emptyStyle, children: "\u6682\u65E0\u8D8B\u52BF\u6570\u636E\u3002" }) });
   }
-  const width = Math.max(320, buckets.length * 22);
-  const height = 118;
+  const width = 640;
+  const height = 132;
   const padX = 8;
   const padTop = 10;
-  const padBottom = 20;
+  const padBottom = 22;
   const plotHeight = height - padTop - padBottom;
   const slot = (width - padX * 2) / buckets.length;
-  const barWidth = Math.max(4, Math.min(18, slot * 0.58));
+  const barWidth = Math.max(4, Math.min(32, slot * 0.58));
   const maxAmount = Math.max(1, ...buckets.map((bucket) => bucket.amount.microCny));
   const labelStep = axisLabelStep(range, buckets.length);
+  const modelLegend = [...new Map(
+    buckets.flatMap((bucket) => bucket.models).filter((model) => model.amount.microCny > 0).map((model) => [modelKey(model), model])
+  ).values()].sort((left, right) => modelKey(left).localeCompare(modelKey(right)));
+  const modelColors = new Map(modelLegend.map((model, index) => [modelKey(model), MODEL_COLORS[index % MODEL_COLORS.length]]));
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { "aria-label": label, style: shellStyle, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { minWidth: 0, overflowX: "auto" }, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("svg", { role: "img", "aria-label": label, viewBox: `0 0 ${width} ${height}`, style: { display: "block", width, minWidth: width, height: "auto" }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { style: { minWidth: 0 }, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("svg", { role: "img", "aria-label": label, viewBox: `0 0 ${width} ${height}`, style: { display: "block", width: "100%", height: "auto", aspectRatio: `${width} / ${height}` }, children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("line", { x1: padX, x2: width - padX, y1: height - padBottom, y2: height - padBottom, stroke: DSH_COLORS.border1 }),
       buckets.map((bucket, index) => {
         const value = bucket.amount.microCny;
-        const barHeight = Math.max(2, value / maxAmount * plotHeight);
+        const barHeight = value > 0 ? Math.max(2, value / maxAmount * plotHeight) : 2;
         const x = padX + index * slot + (slot - barWidth) / 2;
         const y = height - padBottom - barHeight;
         const displayLabel = bucketLabel(range, bucket.key);
+        const modelSegments = bucket.models.filter((model) => model.amount.microCny > 0 && modelColors.has(modelKey(model)));
+        const modelTotal = modelSegments.reduce((sum, model) => sum + model.amount.microCny, 0);
+        const scale = modelTotal > value && modelTotal > 0 ? value / modelTotal : 1;
+        let segmentBottom = height - padBottom;
         return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("g", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("title", { children: `${displayLabel} \xB7 ${bucketAmount(bucket)} \xB7 ${bucket.requestCount} \u6B21` }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+          modelSegments.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
             "rect",
             {
               x,
@@ -1627,12 +1659,58 @@ function AnalyticsChart({
               onFocus: () => setSelectedKey(bucket.key),
               onClick: () => setSelectedKey(bucket.key)
             }
-          ),
+          ) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+            modelTotal < value ? (() => {
+              const remainderHeight = (value - modelTotal) / maxAmount * plotHeight;
+              segmentBottom -= remainderHeight;
+              return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                "rect",
+                {
+                  x,
+                  y: segmentBottom,
+                  width: barWidth,
+                  height: remainderHeight,
+                  rx: 2,
+                  fill: selectedKey === bucket.key ? DSH_COLORS.primary : DSH_COLORS.brand,
+                  tabIndex: -1,
+                  "aria-hidden": "true",
+                  onFocus: () => setSelectedKey(bucket.key),
+                  onClick: () => setSelectedKey(bucket.key)
+                }
+              );
+            })() : null,
+            modelSegments.map((model, segmentIndex) => {
+              const segmentHeight = Math.max(1, model.amount.microCny * scale / maxAmount * plotHeight);
+              segmentBottom -= segmentHeight;
+              const modelName = modelLabel(model);
+              return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                "rect",
+                {
+                  x,
+                  y: segmentBottom,
+                  width: barWidth,
+                  height: segmentHeight,
+                  rx: segmentIndex === modelSegments.length - 1 ? 2 : 0,
+                  fill: selectedKey === bucket.key ? DSH_COLORS.primary : modelColors.get(modelKey(model)),
+                  tabIndex: segmentIndex === 0 ? 0 : -1,
+                  role: segmentIndex === 0 ? "img" : void 0,
+                  "aria-label": segmentIndex === 0 ? `${displayLabel} ${modelName} ${bucketAmount(bucket)}\uFF0C${bucket.totalTokens} Token\uFF0C${bucket.requestCount} \u6B21\u8BF7\u6C42` : void 0,
+                  onFocus: () => setSelectedKey(bucket.key),
+                  onClick: () => setSelectedKey(bucket.key)
+                },
+                modelKey(model)
+              );
+            })
+          ] }),
           index === buckets.length - 1 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("circle", { cx: x + barWidth / 2, cy: y, r: 2.5, fill: DSH_COLORS.primary }) : null,
           index % labelStep === 0 || range !== "today" && index === buckets.length - 1 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("text", { x: x + barWidth / 2, y: height - 6, textAnchor: "middle", fill: DSH_COLORS.tertiary, fontSize: "9", children: displayLabel }) : null
         ] }, bucket.key);
       })
     ] }) }),
+    modelLegend.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { role: "list", "aria-label": "\u6A21\u578B\u56FE\u4F8B", style: { display: "flex", flexWrap: "wrap", gap: "4px 10px", color: DSH_COLORS.secondary, fontSize: 10 }, children: modelLegend.map((model) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { role: "listitem", style: { display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { "aria-hidden": "true", style: { width: 8, height: 8, flex: "0 0 auto", borderRadius: 2, background: modelColors.get(modelKey(model)) } }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: modelLabel(model) })
+    ] }, modelKey(model))) }) : null,
     selectedKey ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { style: { margin: 0, color: DSH_COLORS.secondary, fontSize: 10, fontVariantNumeric: "tabular-nums" }, children: (() => {
       const bucket = buckets.find((item) => item.key === selectedKey);
       return bucket ? `${bucketLabel(range, bucket.key)} \xB7 ${bucketAmount(bucket)} \xB7 ${formatTokenLabel(bucket.totalTokens)} \xB7 ${bucket.requestCount} \u6B21\u8BF7\u6C42` : "";
@@ -5154,7 +5232,8 @@ function parseUsageOverviewReport(value) {
         key: boundedString(bucket.key, `usageOverview.trend[${index}].key`, 32),
         startAt: timestamp(bucket.startAt, `usageOverview.trend[${index}].startAt`),
         endAt: timestamp(bucket.endAt, `usageOverview.trend[${index}].endAt`),
-        ...parseUsageOverviewTotal(bucket, `usageOverview.trend[${index}]`)
+        ...parseUsageOverviewTotal(bucket, `usageOverview.trend[${index}]`),
+        models: bucket.models === void 0 ? [] : parseUsageOverviewModels(bucket.models, `usageOverview.trend[${index}].models`)
       };
     }),
     topModels: topModels.map((item, index) => {
@@ -5166,6 +5245,16 @@ function parseUsageOverviewReport(value) {
       };
     })
   };
+}
+function parseUsageOverviewModels(value, field) {
+  return array(value, field).map((item, index) => {
+    const model = object(item, `${field}[${index}]`);
+    return {
+      provider: boundedString(model.provider, `${field}[${index}].provider`, 120),
+      model: boundedString(model.model, `${field}[${index}].model`, 240),
+      ...parseUsageOverviewTotal(model, `${field}[${index}]`)
+    };
+  });
 }
 function parseUsageOverviewTotal(value, field) {
   const record = object(value, field);

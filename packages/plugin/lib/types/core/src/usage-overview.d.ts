@@ -32,6 +32,7 @@ export interface UsageOverviewTrendBucket extends UsageOverviewTotal {
     readonly key: string;
     readonly startAt: string;
     readonly endAt: string;
+    readonly models: UsageOverviewModelSummary[];
 }
 export interface UsageOverviewModelSummary extends UsageOverviewTotal {
     readonly provider: string;

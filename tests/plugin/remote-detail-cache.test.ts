@@ -261,8 +261,53 @@ test("Typert Remote facade forwards EXT remote methods through descriptors and s
   expect((await facade.getCostAnalytics()).global.requestCount).toBe(2);
   const usageOverview = await facade.getUsageOverview({ range: "7d" });
   expect(usageOverview.trend).toHaveLength(7);
+  expect(usageOverview.trend.some((bucket) => (bucket.models ?? []).length > 0)).toBe(true);
   expect(usageOverview.totals.requestCount).toBe(2);
   expect(await facade.exportLedger("csv")).toContain("req-child:final");
+
+  facade.dispose();
+  runtime.uninstall();
+});
+
+test("Typert Remote defaults missing usage overview bucket models to empty arrays", async () => {
+  const dsh = new FakeDshContext();
+  const runtime = createMyMeterHostRuntime({ dsh });
+  const namespace = createTypertNamespace(runtime.remote);
+  namespace.getUsageOverview = async () => ({
+    ok: true,
+    value: {
+      range: "today",
+      timeZone: "Asia/Shanghai",
+      generatedAt: "2026-08-20T00:00:00.000Z",
+      startAt: "2026-08-20T00:00:00.000Z",
+      endAt: "2026-08-21T00:00:00.000Z",
+      totals: {
+        amountMicroCny: 0,
+        totalTokens: 0,
+        requestCount: 0,
+        pricedRequestCount: 0,
+        unknownRequestCount: 0,
+        coverage: "unavailable",
+      },
+      trend: Array.from({ length: 24 }, (_, index) => ({
+        key: String(index).padStart(2, "0"),
+        startAt: "2026-08-20T00:00:00.000Z",
+        endAt: "2026-08-20T01:00:00.000Z",
+        amountMicroCny: 0,
+        totalTokens: 0,
+        requestCount: 0,
+        pricedRequestCount: 0,
+        unknownRequestCount: 0,
+        coverage: "unavailable",
+      })),
+      topModels: [],
+    },
+  });
+  const facade = await createMyMeterRemoteFromTypert(namespace, { pollIntervalMs: 0 });
+
+  const report = await facade.getUsageOverview({ range: "today" });
+  expect(report.trend).toHaveLength(24);
+  expect(report.trend.every((bucket) => (bucket.models ?? []).length === 0)).toBe(true);
 
   facade.dispose();
   runtime.uninstall();

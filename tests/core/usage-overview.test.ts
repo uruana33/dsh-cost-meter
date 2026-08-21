@@ -35,6 +35,42 @@ test.each([
   expect(report.trend.some((bucket) => bucket.requestCount === 0)).toBe(true);
 });
 
+test("usage overview includes per-bucket model breakdowns", () => {
+  const report = createUsageOverview([
+    event("2026-08-19T16:00:00.000Z", { provider: "deepseek", model: "deepseek-chat", amountMicroCny: 80, outputTokens: 8 }),
+    event("2026-08-19T16:15:00.000Z", { provider: "openai", model: "gpt-4.1", amountMicroCny: 120, outputTokens: 12 }),
+    event("2026-08-19T16:30:00.000Z", { provider: "openai", model: "gpt-4.1", status: "unknown", amountMicroCny: 999, outputTokens: 5 }),
+  ], {
+    range: "today",
+    now: "2026-08-20T06:00:00.000Z",
+    timeZone: "Asia/Shanghai",
+  });
+
+  expect(report.trend[0]?.models).toEqual([
+    {
+      provider: "openai",
+      model: "gpt-4.1",
+      amountMicroCny: 120,
+      totalTokens: 17,
+      requestCount: 2,
+      pricedRequestCount: 1,
+      unknownRequestCount: 1,
+      coverage: "partial",
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-chat",
+      amountMicroCny: 80,
+      totalTokens: 8,
+      requestCount: 1,
+      pricedRequestCount: 1,
+      unknownRequestCount: 0,
+      coverage: "complete",
+    },
+  ]);
+  expect(report.trend[1]?.models).toEqual([]);
+});
+
 test("usage overview exposes partial pricing coverage and stable top-model ordering", () => {
   const report = createUsageOverview([
     event("2026-08-20T01:00:00.000Z", { model: "model-b", amountMicroCny: 100, outputTokens: 10 }),
