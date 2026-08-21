@@ -564,7 +564,13 @@ export function CompactMeter({
   );
 }
 
-export function GlobalSessionList({ store }: { store: MyMeterStore }) {
+export function GlobalSessionList({
+  store,
+  showViewTabs = true,
+}: {
+  store: MyMeterStore;
+  showViewTabs?: boolean | undefined;
+}) {
   const state = useMyMeterStoreState(store);
   const hasGlobalMixedCurrency = state.viewModel.currencyTotals.length > 1;
   const sessions = useMemo(() => {
@@ -592,6 +598,23 @@ export function GlobalSessionList({ store }: { store: MyMeterStore }) {
   const activePanel = state.ui.activePanel === "costTree" || state.ui.activePanel === "analytics"
     ? state.ui.activePanel
     : "sessions";
+
+  useEffect(() => {
+    if (activePanel === "costTree" && state.viewModel.sessionCostTree.status === "idle") {
+      void store.loadSessionCostTree();
+    }
+    if (activePanel === "analytics") {
+      if (state.viewModel.costAnalytics.status === "idle") void store.loadCostAnalytics();
+      if (state.viewModel.usageOverview.status === "idle") void store.loadUsageOverview(state.ui.analyticsRange);
+    }
+  }, [
+    activePanel,
+    state.ui.analyticsRange,
+    state.viewModel.costAnalytics.status,
+    state.viewModel.sessionCostTree.status,
+    state.viewModel.usageOverview.status,
+    store,
+  ]);
 
   if (state.remote.connection.status === "loading") {
     return <p style={{ margin: 0, padding: 12, color: DSH_COLORS.secondary, fontSize: 13 }}>加载会话中...</p>;
@@ -667,54 +690,7 @@ export function GlobalSessionList({ store }: { store: MyMeterStore }) {
         />
       </header>
 
-      <div role="tablist" aria-label="费用视图" style={{ display: "flex", gap: 4, overflowX: "auto", touchAction: "pan-x" }}>
-        {[
-          ["sessions", "会话"],
-          ["costTree", "费用树"],
-          ["analytics", "趋势/异常"],
-        ].map(([panel, label]) => {
-          const unavailable = panel === "costTree"
-            ? state.viewModel.sessionCostTree.status === "unavailable"
-            : panel === "analytics"
-              ? state.viewModel.costAnalytics.status === "unavailable"
-                && state.viewModel.usageOverview.status === "unavailable"
-              : false;
-          return <button
-            key={panel}
-            type="button"
-            role="tab"
-            aria-selected={activePanel === panel}
-            disabled={unavailable}
-            onClick={() => {
-              store.setActivePanel(panel as ClientPanel);
-              if (panel === "costTree" && state.viewModel.sessionCostTree.status === "idle") {
-                void store.loadSessionCostTree();
-              }
-              if (panel === "analytics" && state.viewModel.costAnalytics.status === "idle") {
-                void store.loadCostAnalytics();
-              }
-              if (panel === "analytics" && state.viewModel.usageOverview.status === "idle") {
-                void store.loadUsageOverview(state.ui.analyticsRange);
-              }
-            }}
-            style={{
-              minHeight: 28,
-              padding: "4px 10px",
-              borderRadius: 6,
-              border: activePanel === panel ? `1px solid ${DSH_COLORS.brand}` : `1px solid ${DSH_COLORS.border1}`,
-              background: activePanel === panel ? DSH_COLORS.layer2 : DSH_COLORS.layer1,
-              color: activePanel === panel ? DSH_COLORS.brand : DSH_COLORS.secondary,
-              fontSize: 12,
-              fontWeight: 700,
-              whiteSpace: "nowrap",
-              cursor: unavailable ? "not-allowed" : "pointer",
-              opacity: unavailable ? 0.55 : 1,
-            }}
-          >
-            {label}
-          </button>;
-        })}
-      </div>
+      {showViewTabs ? <BillingViewTabs store={store} state={state} activePanel={activePanel} /> : null}
 
       <LedgerExportToolbar store={store} state={state} />
 
@@ -818,6 +794,67 @@ export function GlobalSessionList({ store }: { store: MyMeterStore }) {
   );
 }
 
+function BillingViewTabs({
+  store,
+  state,
+  activePanel,
+  includeCurrentSession = false,
+}: {
+  store: MyMeterStore;
+  state: MyMeterStoreState;
+  activePanel: ClientPanel;
+  includeCurrentSession?: boolean | undefined;
+}): ReactNode {
+  const panels: Array<[ClientPanel, string]> = includeCurrentSession
+    ? [
+        ["detail", "当前会话"],
+        ["sessions", "全部会话"],
+        ["costTree", "费用树"],
+        ["analytics", "趋势/异常"],
+      ]
+    : [
+        ["sessions", "会话"],
+        ["costTree", "费用树"],
+        ["analytics", "趋势/异常"],
+      ];
+
+  return (
+    <div role="tablist" aria-label="费用视图" style={{ display: "flex", gap: 4, overflowX: "auto", touchAction: "pan-x" }}>
+      {panels.map(([panel, label]) => {
+        const unavailable = panel === "costTree"
+          ? state.viewModel.sessionCostTree.status === "unavailable"
+          : panel === "analytics"
+            ? state.viewModel.costAnalytics.status === "unavailable"
+              && state.viewModel.usageOverview.status === "unavailable"
+            : false;
+        return <button
+          key={panel}
+          type="button"
+          role="tab"
+          aria-selected={activePanel === panel}
+          disabled={unavailable}
+          onClick={() => store.setActivePanel(panel)}
+          style={{
+            minHeight: 28,
+            padding: "4px 10px",
+            borderRadius: 6,
+            border: activePanel === panel ? `1px solid ${DSH_COLORS.brand}` : `1px solid ${DSH_COLORS.border1}`,
+            background: activePanel === panel ? DSH_COLORS.layer2 : DSH_COLORS.layer1,
+            color: activePanel === panel ? DSH_COLORS.brand : DSH_COLORS.secondary,
+            fontSize: 12,
+            fontWeight: 700,
+            whiteSpace: "nowrap",
+            cursor: unavailable ? "not-allowed" : "pointer",
+            opacity: unavailable ? 0.55 : 1,
+          }}
+        >
+          {label}
+        </button>;
+      })}
+    </div>
+  );
+}
+
 function LedgerExportToolbar({ store, state }: { store: MyMeterStore; state: MyMeterStoreState }): ReactNode {
   const exportState = state.viewModel.ledgerExport;
   const unavailable = exportState.status === "unavailable";
@@ -872,20 +909,19 @@ function SessionCostTreePanel({ store, state }: { store: MyMeterStore; state: My
     return <ToolRetryState label="加载费用树" onClick={() => { void store.loadSessionCostTree(); }} />;
   }
   const tree = resource.data;
-  if (!tree || tree.roots.length === 0) return <EmptyToolState label="暂无父子会话费用。" />;
+  if (!tree) return <EmptyToolState label="暂无子 Agent 费用关系。" />;
+  const roots = tree.roots.filter((node) => node.children.length > 0 || node.anomalyLabels.length > 0);
+  if (roots.length === 0) return <EmptyToolState label="暂无子 Agent 费用关系。普通会话请在会话列表中查看。" />;
   return (
     <section aria-label="费用树" style={{ display: "grid", gap: 8 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, color: DSH_COLORS.secondary }}>
-        <span>总计 {tree.total.label}</span>
-        <span>{tree.requestCount} 次请求</span>
-      </div>
+      <span style={{ fontSize: 11, color: DSH_COLORS.secondary }}>{roots.length} 个子 Agent 任务树</span>
       {tree.anomalyLabels.length > 0 ? (
         <p role="alert" style={{ margin: 0, color: TOKEN_DETAIL_COLORS.anomaly, fontSize: 11 }}>
           {tree.anomalyLabels.join("；")}
         </p>
       ) : null}
       <ol style={{ display: "grid", gap: 4, margin: 0, padding: 0, listStyle: "none" }}>
-        {tree.roots.map((node) => <SessionCostTreeNodeRow key={node.id} node={node} />)}
+        {roots.map((node) => <SessionCostTreeNodeRow key={node.id} node={node} />)}
       </ol>
     </section>
   );
@@ -914,7 +950,7 @@ function SessionCostTreeNodeRow({ node }: { node: SessionCostTreeNodeView }): Re
           {node.anomalyLabels.length > 0 ? <span style={{ color: TOKEN_DETAIL_COLORS.anomaly }}> · {node.anomalyLabels.join("/")}</span> : null}
         </span>
         <span style={{ textAlign: "right", color: DSH_COLORS.secondary, fontVariantNumeric: "tabular-nums" }}>
-          自身 {node.total.label} · 子树 {node.subtreeTotal.label}
+          {node.children.length > 0 ? `自身 ${node.total.label} · 含子 Agent ${node.subtreeTotal.label}` : `费用 ${node.total.label}`}
         </span>
       </div>
       {node.children.length > 0 ? (
@@ -938,7 +974,10 @@ function CostAnalyticsPanel({ store, state }: { store: MyMeterStore; state: MyMe
     return <ToolErrorState label={resource.error ?? "趋势分析加载失败"} onRetry={() => { void store.loadCostAnalytics(); }} />;
   }
   if (resource.status === "idle" && !overviewResource.data) {
-    return <ToolRetryState label="加载趋势/异常" onClick={() => { void store.loadCostAnalytics(); }} />;
+    return <ToolRetryState label="加载趋势/异常" onClick={() => {
+      void store.loadCostAnalytics();
+      void store.loadUsageOverview(state.ui.analyticsRange);
+    }} />;
   }
   const analytics = resource.data;
   const overview = overviewResource.data;
@@ -1390,6 +1429,9 @@ export function MyMeterConversationView({
 }) {
   const state = useMyMeterStoreState(store);
   const overlayEnabled = state.settings.overlayEnabled;
+  const activePanel = state.ui.activePanel === "sessions" || state.ui.activePanel === "costTree" || state.ui.activePanel === "analytics"
+    ? state.ui.activePanel
+    : "detail";
 
   useLayoutEffect(() => {
     acquireConversationOverlay(store);
@@ -1474,11 +1516,18 @@ export function MyMeterConversationView({
           </button>
         </div>
       </div>
-      <AccountBalancesPanel balances={state.viewModel.balances} />
+      <div style={{ marginBottom: 10 }}>
+        <BillingViewTabs store={store} state={state} activePanel={activePanel} includeCurrentSession />
+      </div>
       <div style={{ color: DSH_COLORS.primary, background: DSH_COLORS.base }}>
-        {state.ui.activePanel === "analytics"
-          ? <GlobalSessionList store={store} />
-          : <SessionDetailPanel store={store} showNavigation={false} />}
+        {activePanel === "detail" ? (
+          <>
+            <AccountBalancesPanel balances={state.viewModel.balances} />
+            <SessionDetailPanel store={store} showNavigation={false} />
+          </>
+        ) : (
+          <GlobalSessionList store={store} showViewTabs={false} />
+        )}
       </div>
     </section>
   );

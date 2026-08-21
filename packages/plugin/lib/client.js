@@ -2861,7 +2861,10 @@ function CompactMeter({
     ) : null
   ] });
 }
-function GlobalSessionList({ store }) {
+function GlobalSessionList({
+  store,
+  showViewTabs = true
+}) {
   const state = useMyMeterStoreState(store);
   const hasGlobalMixedCurrency = state.viewModel.currencyTotals.length > 1;
   const sessions = (0, import_react4.useMemo)(() => {
@@ -2884,6 +2887,22 @@ function GlobalSessionList({ store }) {
     });
   }, [state.ui.filterStatus, state.ui.searchQuery, state.ui.sortBy, state.viewModel.sessions]);
   const activePanel = state.ui.activePanel === "costTree" || state.ui.activePanel === "analytics" ? state.ui.activePanel : "sessions";
+  (0, import_react4.useEffect)(() => {
+    if (activePanel === "costTree" && state.viewModel.sessionCostTree.status === "idle") {
+      void store.loadSessionCostTree();
+    }
+    if (activePanel === "analytics") {
+      if (state.viewModel.costAnalytics.status === "idle") void store.loadCostAnalytics();
+      if (state.viewModel.usageOverview.status === "idle") void store.loadUsageOverview(state.ui.analyticsRange);
+    }
+  }, [
+    activePanel,
+    state.ui.analyticsRange,
+    state.viewModel.costAnalytics.status,
+    state.viewModel.sessionCostTree.status,
+    state.viewModel.usageOverview.status,
+    store
+  ]);
   if (state.remote.connection.status === "loading") {
     return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { style: { margin: 0, padding: 12, color: DSH_COLORS4.secondary, fontSize: 13 }, children: "\u52A0\u8F7D\u4F1A\u8BDD\u4E2D..." });
   }
@@ -2957,49 +2976,7 @@ function GlobalSessionList({ store }) {
         ]
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { role: "tablist", "aria-label": "\u8D39\u7528\u89C6\u56FE", style: { display: "flex", gap: 4, overflowX: "auto", touchAction: "pan-x" }, children: [
-      ["sessions", "\u4F1A\u8BDD"],
-      ["costTree", "\u8D39\u7528\u6811"],
-      ["analytics", "\u8D8B\u52BF/\u5F02\u5E38"]
-    ].map(([panel, label]) => {
-      const unavailable = panel === "costTree" ? state.viewModel.sessionCostTree.status === "unavailable" : panel === "analytics" ? state.viewModel.costAnalytics.status === "unavailable" && state.viewModel.usageOverview.status === "unavailable" : false;
-      return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-        "button",
-        {
-          type: "button",
-          role: "tab",
-          "aria-selected": activePanel === panel,
-          disabled: unavailable,
-          onClick: () => {
-            store.setActivePanel(panel);
-            if (panel === "costTree" && state.viewModel.sessionCostTree.status === "idle") {
-              void store.loadSessionCostTree();
-            }
-            if (panel === "analytics" && state.viewModel.costAnalytics.status === "idle") {
-              void store.loadCostAnalytics();
-            }
-            if (panel === "analytics" && state.viewModel.usageOverview.status === "idle") {
-              void store.loadUsageOverview(state.ui.analyticsRange);
-            }
-          },
-          style: {
-            minHeight: 28,
-            padding: "4px 10px",
-            borderRadius: 6,
-            border: activePanel === panel ? `1px solid ${DSH_COLORS4.brand}` : `1px solid ${DSH_COLORS4.border1}`,
-            background: activePanel === panel ? DSH_COLORS4.layer2 : DSH_COLORS4.layer1,
-            color: activePanel === panel ? DSH_COLORS4.brand : DSH_COLORS4.secondary,
-            fontSize: 12,
-            fontWeight: 700,
-            whiteSpace: "nowrap",
-            cursor: unavailable ? "not-allowed" : "pointer",
-            opacity: unavailable ? 0.55 : 1
-          },
-          children: label
-        },
-        panel
-      );
-    }) }),
+    showViewTabs ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(BillingViewTabs, { store, state, activePanel }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(LedgerExportToolbar, { store, state }),
     activePanel === "costTree" ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(SessionCostTreePanel, { store, state }) : activePanel === "analytics" ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CostAnalyticsPanel, { store, state }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_jsx_runtime5.Fragment, { children: [
       /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto auto", gap: 6 }, children: [
@@ -3099,6 +3076,51 @@ function GlobalSessionList({ store }) {
     ] })
   ] });
 }
+function BillingViewTabs({
+  store,
+  state,
+  activePanel,
+  includeCurrentSession = false
+}) {
+  const panels = includeCurrentSession ? [
+    ["detail", "\u5F53\u524D\u4F1A\u8BDD"],
+    ["sessions", "\u5168\u90E8\u4F1A\u8BDD"],
+    ["costTree", "\u8D39\u7528\u6811"],
+    ["analytics", "\u8D8B\u52BF/\u5F02\u5E38"]
+  ] : [
+    ["sessions", "\u4F1A\u8BDD"],
+    ["costTree", "\u8D39\u7528\u6811"],
+    ["analytics", "\u8D8B\u52BF/\u5F02\u5E38"]
+  ];
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { role: "tablist", "aria-label": "\u8D39\u7528\u89C6\u56FE", style: { display: "flex", gap: 4, overflowX: "auto", touchAction: "pan-x" }, children: panels.map(([panel, label]) => {
+    const unavailable = panel === "costTree" ? state.viewModel.sessionCostTree.status === "unavailable" : panel === "analytics" ? state.viewModel.costAnalytics.status === "unavailable" && state.viewModel.usageOverview.status === "unavailable" : false;
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+      "button",
+      {
+        type: "button",
+        role: "tab",
+        "aria-selected": activePanel === panel,
+        disabled: unavailable,
+        onClick: () => store.setActivePanel(panel),
+        style: {
+          minHeight: 28,
+          padding: "4px 10px",
+          borderRadius: 6,
+          border: activePanel === panel ? `1px solid ${DSH_COLORS4.brand}` : `1px solid ${DSH_COLORS4.border1}`,
+          background: activePanel === panel ? DSH_COLORS4.layer2 : DSH_COLORS4.layer1,
+          color: activePanel === panel ? DSH_COLORS4.brand : DSH_COLORS4.secondary,
+          fontSize: 12,
+          fontWeight: 700,
+          whiteSpace: "nowrap",
+          cursor: unavailable ? "not-allowed" : "pointer",
+          opacity: unavailable ? 0.55 : 1
+        },
+        children: label
+      },
+      panel
+    );
+  }) });
+}
 function LedgerExportToolbar({ store, state }) {
   const exportState = state.viewModel.ledgerExport;
   const unavailable = exportState.status === "unavailable";
@@ -3149,20 +3171,16 @@ function SessionCostTreePanel({ store, state }) {
     } });
   }
   const tree = resource.data;
-  if (!tree || tree.roots.length === 0) return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EmptyToolState, { label: "\u6682\u65E0\u7236\u5B50\u4F1A\u8BDD\u8D39\u7528\u3002" });
+  if (!tree) return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EmptyToolState, { label: "\u6682\u65E0\u5B50 Agent \u8D39\u7528\u5173\u7CFB\u3002" });
+  const roots = tree.roots.filter((node) => node.children.length > 0 || node.anomalyLabels.length > 0);
+  if (roots.length === 0) return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EmptyToolState, { label: "\u6682\u65E0\u5B50 Agent \u8D39\u7528\u5173\u7CFB\u3002\u666E\u901A\u4F1A\u8BDD\u8BF7\u5728\u4F1A\u8BDD\u5217\u8868\u4E2D\u67E5\u770B\u3002" });
   return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { "aria-label": "\u8D39\u7528\u6811", style: { display: "grid", gap: 8 }, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11, color: DSH_COLORS4.secondary }, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { children: [
-        "\u603B\u8BA1 ",
-        tree.total.label
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { children: [
-        tree.requestCount,
-        " \u6B21\u8BF7\u6C42"
-      ] })
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { fontSize: 11, color: DSH_COLORS4.secondary }, children: [
+      roots.length,
+      " \u4E2A\u5B50 Agent \u4EFB\u52A1\u6811"
     ] }),
     tree.anomalyLabels.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { role: "alert", style: { margin: 0, color: TOKEN_DETAIL_COLORS.anomaly, fontSize: 11 }, children: tree.anomalyLabels.join("\uFF1B") }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("ol", { style: { display: "grid", gap: 4, margin: 0, padding: 0, listStyle: "none" }, children: tree.roots.map((node) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(SessionCostTreeNodeRow, { node }, node.id)) })
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("ol", { style: { display: "grid", gap: 4, margin: 0, padding: 0, listStyle: "none" }, children: roots.map((node) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(SessionCostTreeNodeRow, { node }, node.id)) })
   ] });
 }
 function SessionCostTreeNodeRow({ node }) {
@@ -3194,12 +3212,7 @@ function SessionCostTreeNodeRow({ node }) {
               node.anomalyLabels.join("/")
             ] }) : null
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { style: { textAlign: "right", color: DSH_COLORS4.secondary, fontVariantNumeric: "tabular-nums" }, children: [
-            "\u81EA\u8EAB ",
-            node.total.label,
-            " \xB7 \u5B50\u6811 ",
-            node.subtreeTotal.label
-          ] })
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { style: { textAlign: "right", color: DSH_COLORS4.secondary, fontVariantNumeric: "tabular-nums" }, children: node.children.length > 0 ? `\u81EA\u8EAB ${node.total.label} \xB7 \u542B\u5B50 Agent ${node.subtreeTotal.label}` : `\u8D39\u7528 ${node.total.label}` })
         ]
       }
     ),
@@ -3224,6 +3237,7 @@ function CostAnalyticsPanel({ store, state }) {
   if (resource.status === "idle" && !overviewResource.data) {
     return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ToolRetryState, { label: "\u52A0\u8F7D\u8D8B\u52BF/\u5F02\u5E38", onClick: () => {
       void store.loadCostAnalytics();
+      void store.loadUsageOverview(state.ui.analyticsRange);
     } });
   }
   const analytics = resource.data;
@@ -3584,6 +3598,7 @@ function MyMeterConversationView({
 }) {
   const state = useMyMeterStoreState(store);
   const overlayEnabled = state.settings.overlayEnabled;
+  const activePanel = state.ui.activePanel === "sessions" || state.ui.activePanel === "costTree" || state.ui.activePanel === "analytics" ? state.ui.activePanel : "detail";
   (0, import_react4.useLayoutEffect)(() => {
     acquireConversationOverlay(store);
     return () => releaseConversationOverlay(store);
@@ -3665,8 +3680,11 @@ function MyMeterConversationView({
             ]
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(AccountBalancesPanel, { balances: state.viewModel.balances }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: { color: DSH_COLORS4.primary, background: DSH_COLORS4.base }, children: state.ui.activePanel === "analytics" ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(GlobalSessionList, { store }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(SessionDetailPanel, { store, showNavigation: false }) })
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: { marginBottom: 10 }, children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(BillingViewTabs, { store, state, activePanel, includeCurrentSession: true }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { style: { color: DSH_COLORS4.primary, background: DSH_COLORS4.base }, children: activePanel === "detail" ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_jsx_runtime5.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(AccountBalancesPanel, { balances: state.viewModel.balances }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(SessionDetailPanel, { store, showNavigation: false })
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(GlobalSessionList, { store, showViewTabs: false }) })
       ]
     }
   );
@@ -5570,7 +5588,7 @@ async function mountMyMeterUi(ctx) {
       (props) => (0, import_react6.createElement)(ShellOverlay, {
         store,
         ...props,
-        onOpenTokenBilling: () => openTokenBillingView(store)
+        onOpenTokenBilling: openTokenBillingView
       })
     )),
     ctx.slots.inject("settings.plugin.item", () => ctx.slots.register(
@@ -5591,10 +5609,9 @@ async function mountMyMeterUi(ctx) {
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   };
 }
-function openTokenBillingView(store) {
+function openTokenBillingView() {
   if (typeof document === "undefined") return;
   const tab = Array.from(document.querySelectorAll('button[role="tab"]')).find((button) => button.textContent?.trim() === TOKEN_BILLING_VIEW_LABEL);
   tab?.click();
-  queueMicrotask(() => store.setActivePanel("analytics"));
 }
 return module.exports; } });

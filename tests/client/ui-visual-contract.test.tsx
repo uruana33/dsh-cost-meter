@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 describe("overlay visual contract", () => {
-  test("renders Token计费 details with dsh theme tokens and without overlay navigation", () => {
+  test("renders Token计费 details with the same page navigation for every entry", () => {
     const store = createMyMeterStore({
       remote: createMockRemote("billing"),
       storage: new MemoryStorage(),
@@ -46,7 +46,10 @@ describe("overlay visual contract", () => {
     expect(screen.getByRole("region", { name: "Token计费" })).toBeTruthy();
     expect(screen.queryByText("液晶")).toBeNull();
     expect(screen.getByText(/Token 计费明细/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "全部会话" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "当前会话" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "全部会话" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "费用树" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "趋势/异常" })).toBeTruthy();
     expect(store.getState().ui.selectedSessionId).toBe("sess-1");
 
     const region = screen.getByRole("region", { name: "Token计费" });
@@ -630,24 +633,38 @@ describe("overlay visual contract", () => {
     store.destroy();
   });
 
-  test("opens on-demand cost tree and analytics views from the global tool tabs", async () => {
+  test("opens cost tree and usage trends when entering Token计费 directly", async () => {
     const remote = createMockRemote("billing");
     const rootSummary = toolLedgerSummary("root", 150_000);
+    const childSummary = toolLedgerSummary("child", 50_000);
     Object.assign(remote, {
       getSessionCostTree: async () => ({
         roots: [{
           id: "root",
           title: "主会话",
-          childSessionIds: [],
+          childSessionIds: ["child"],
           depth: 0,
           path: ["root"],
           summary: rootSummary,
-          subtreeSummary: rootSummary,
+          subtreeSummary: toolLedgerSummary("root", 200_000),
           orphaned: false,
           cyclic: false,
         }],
-        nodes: {},
-        summary: rootSummary,
+        nodes: {
+          child: {
+            id: "child",
+            title: "子 Agent 会话",
+            parentSessionId: "root",
+            childSessionIds: [],
+            depth: 1,
+            path: ["root", "child"],
+            summary: childSummary,
+            subtreeSummary: childSummary,
+            orphaned: false,
+            cyclic: false,
+          },
+        },
+        summary: toolLedgerSummary("all", 200_000),
         anomalies: { missingParents: [], cycles: [] },
       }),
       getCostAnalytics: async () => ({
@@ -740,15 +757,18 @@ describe("overlay visual contract", () => {
     });
     const store = createMyMeterStore({ remote, storage: new MemoryStorage() });
 
-    render(<GlobalSessionList store={store} />);
-    expect(screen.getByRole("button", { name: "下载JSON账本" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "下载CSV账本" })).toBeEnabled();
+    render(<MyMeterConversationView store={store} sessionId="sess-1" />);
+    expect(screen.getByRole("tab", { name: "当前会话" })).toHaveAttribute("aria-selected", "true");
 
     await act(async () => {
       fireEvent.click(screen.getByRole("tab", { name: "费用树" }));
     });
+    expect(screen.getByRole("button", { name: "下载JSON账本" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "下载CSV账本" })).toBeEnabled();
     expect(await screen.findByRole("region", { name: "费用树" })).toHaveTextContent("主会话");
-    expect(screen.getByRole("region", { name: "费用树" })).toHaveTextContent("子树 ¥0.150");
+    expect(screen.getByRole("region", { name: "费用树" })).toHaveTextContent("子 Agent 会话");
+    expect(screen.getByRole("region", { name: "费用树" })).toHaveTextContent("含子 Agent ¥0.200");
+    expect(screen.queryByLabelText("搜索会话")).toBeNull();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("tab", { name: "趋势/异常" }));
@@ -772,6 +792,46 @@ describe("overlay visual contract", () => {
     expect(await screen.findByRole("img", { name: "7天按天费用趋势" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "7天" })).toHaveAttribute("aria-pressed", "true");
 
+    fireEvent.click(screen.getByRole("tab", { name: "全部会话" }));
+    expect(screen.getByLabelText("搜索会话")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "费用树" })).toBeNull();
+
+    store.destroy();
+  });
+
+  test("does not repeat ordinary sessions in the cost tree without parent-child relationships", async () => {
+    const remote = createMockRemote("settled");
+    const summary = toolLedgerSummary("standalone", 150_000);
+    Object.assign(remote, {
+      getSessionCostTree: async () => ({
+        roots: [{
+          id: "standalone",
+          title: "普通会话",
+          childSessionIds: [],
+          depth: 0,
+          path: ["standalone"],
+          summary,
+          subtreeSummary: summary,
+          orphaned: false,
+          cyclic: false,
+        }],
+        nodes: {},
+        summary,
+        anomalies: { missingParents: [], cycles: [] },
+      }),
+    });
+    const store = createMyMeterStore({ remote, storage: new MemoryStorage() });
+
+    render(<MyMeterConversationView store={store} sessionId="sess-1" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("tab", { name: "费用树" }));
+    });
+
+    expect(await screen.findByText("暂无子 Agent 费用关系。普通会话请在会话列表中查看。")).toBeTruthy();
+    expect(screen.queryByText("普通会话")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "全部会话" }));
+    expect(screen.getByLabelText("搜索会话")).toBeTruthy();
     store.destroy();
   });
 
