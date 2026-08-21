@@ -493,7 +493,7 @@ test("host runtime connects dsh projection and final usage without double settle
       reasoningEffort: "high",
       agentPreset: "Coding",
       pricingZone: "offpeak",
-      priceVersion: "deepseek-official-pricing-2026-08-17",
+      priceVersion: "deepseek-official-pricing-2026-08-21",
       totalMicroCny: 6_050_000,
       settledTotalMicroCny: 6_050_000,
       estimatedTotalMicroCny: 0,

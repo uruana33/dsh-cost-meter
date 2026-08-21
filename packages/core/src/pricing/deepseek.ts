@@ -5,7 +5,10 @@ export const DEEPSEEK_PROVIDER = "deepseek" as const;
 export const DEEPSEEK_PRICE_VERSION = PRICING_CATALOG_VERSIONS.deepseek;
 export const DEEPSEEK_PRICING_SOURCE = "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/";
 
-export type DeepSeekModelId = "deepseek-v4-flash" | "deepseek-v4-pro";
+export type DeepSeekModelId =
+  | "deepseek-v4-flash"
+  | "deepseek-v4-pro"
+  | "deepseek-v4-flash-vision-exp";
 
 export const DEEPSEEK_MODEL_ALIASES: Record<string, DeepSeekModelId> = {
   "deepseek-chat": "deepseek-v4-flash",
@@ -44,6 +47,18 @@ export const DEEPSEEK_PRICE_TABLE: Record<
       cacheHitMicroCnyPerMillionTokens: 150_000n,
       cacheMissMicroCnyPerMillionTokens: 4_500_000n,
       outputMicroCnyPerMillionTokens: 13_500_000n,
+    },
+  },
+  "deepseek-v4-flash-vision-exp": {
+    peak: {
+      cacheHitMicroCnyPerMillionTokens: 100_000n,
+      cacheMissMicroCnyPerMillionTokens: 3_000_000n,
+      outputMicroCnyPerMillionTokens: 9_000_000n,
+    },
+    offpeak: {
+      cacheHitMicroCnyPerMillionTokens: 50_000n,
+      cacheMissMicroCnyPerMillionTokens: 1_500_000n,
+      outputMicroCnyPerMillionTokens: 4_500_000n,
     },
   },
 };
