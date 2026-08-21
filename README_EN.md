@@ -4,124 +4,149 @@
 ![Status](https://img.shields.io/badge/status-early%20preview-f59e0b)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-cost-meter is a multi-provider LLM token cost meter plugin for dsh / DeepSeek Harness. It converts local request usage into a traceable local ledger and real-time billing views.
+dsh-cost-meter is a multi-provider LLM token cost meter for dsh / DeepSeek Harness. It turns locally observed request usage into a traceable local ledger, live receipts, session billing, and usage analysis inside a dsh Web profile.
 
 > [!WARNING]
-> dsh-cost-meter is a local observability, estimation, and replay tool. It is not the official bill from DeepSeek, OpenAI, Anthropic, xAI, or any model provider. Pricing snapshots ship with plugin releases; streaming output is estimated first and corrected when provider usage arrives. Treat provider consoles, invoices, and actual charges as the source of truth.
+> This is a local observability, estimation, and replay tool, not an official bill from DeepSeek, OpenAI, Anthropic, xAI, or any other provider. Streaming output is estimated first and corrected when provider usage arrives. Provider consoles, invoices, and actual charges remain the source of truth.
 
-## UI And Demos
+## Current Release
 
-The screenshots below show the main flows in a dsh Web profile. Balances, sessions, token counts, and amounts are simulated examples and do not represent a real account or provider invoice.
+The published package is [`@mymeter/dsh-cost-meter@0.2.1`](https://www.npmjs.com/package/@mymeter/dsh-cost-meter). Recent release highlights:
 
-### Token Billing View
+- Global usage overview for today, the last 7 days, and the last 30 days, with cost, tokens, request count, coverage, and top models.
+- A unified `Token计费` page with session, cost-tree, and trend/anomaly views; model-colored trends with range switching; and JSON/CSV ledger export.
+- A new `deepseek-v4-flash-vision-exp` entry in the DeepSeek snapshot, using provider-reported image tokens and the existing Beijing peak/off-peak schedule.
+- JSON remains the default ledger format, append is opt-in, and failed balance refreshes preserve the last usable result with an explicit status.
 
-The Token billing view shows balance, session cost, budget status, cache savings, model pricing version, and bucketed input (uncached), input (cached), output, and reasoning tokens.
-
-![Token billing view: DeepSeek session cost and token buckets](docs/assets/pic0.png)
-
-When usage data is unavailable or a model cannot be matched to a price, the view explicitly reports an unavailable or estimated state instead of presenting a false precise amount.
-
-![Token billing view: unavailable or pending billing state](docs/assets/pic1.png)
-
-### Conversation View And Token Widget
-
-The small widget in the upper-right corner of the conversation view provides a quick readout of the current request's tokens and cost. Open it to jump to the full Token billing view for session and turn details.
-
-![Token billing widget in the conversation view](docs/assets/pic2.png)
-
-### Token Widget Videos
-
-The videos are stored in `docs/assets`. You can play them from the links below on GitHub; clients with HTML5 video support may also show an inline player.
-
-<video controls preload="metadata" width="320" src="docs/assets/video1.mp4"></video>
-
-[Play video 1: Token widget basics in dark theme (about 15 seconds)](docs/assets/video1.mp4)
-
-<video controls preload="metadata" width="320" src="docs/assets/video2.mp4"></video>
-
-[Play video 2: Token widget generation flow in light theme (about 23 seconds)](docs/assets/video2.mp4)
-
-## Highlights
-
-- Multi-provider pricing catalog: versioned snapshots are registered for DeepSeek, xAI, OpenAI, Anthropic, Google Gemini, Moonshot/Kimi, MiniMax, Mistral, Groq, Together, Fireworks, and Cerebras.
-- Token-bucket billing: separates uncached input, cached input, and output tokens; reasoning tokens are shown as included in output cost.
-- Live receipt and final settlement: streaming output is estimated during generation, then replaced by settled events when `assistant/message.usage` arrives.
-- Session-level tracking: current request, current session, local total, session list, stage tabs, turn details, model, reasoning effort, agent preset, and pricing version.
-- Cost insights: the session and global views show budget progress and the DeepSeek peak/off-peak countdown; session cache-hit savings are shown when unit prices are unambiguous, and cost trees / trends / exports are available through on-demand Remote APIs.
-- Local durable ledger: the release package defaults to `$DSH_HOME/mymeter/ledger.json` with `ledgerFormat: json`, restoring aggregates after restart; `ledgerFormat: append` can be explicitly opted in.
-- On-demand analysis APIs: Host Remote exposes the session cost tree, trend/anomaly report, and CSV/JSON ledger export without putting those larger objects into the default snapshot.
-- Host/Client boundary: API keys, ledger files, and balance requests stay on the Host; the Client receives sanitized display DTOs only.
-- Native dsh integration: registers `shell.overlay`, `conversation.view`, and the dsh plugin settings card, while following dsh global theme variables.
+See [CHANGELOG](CHANGELOG.md) for the full history and the [pricing catalog](docs/pricing-catalog.md) for snapshot coverage.
 
 ## Quick Start
 
-1. Install the published package from npm (recommended):
+### Install from npm (recommended)
 
-   ```bash
-   dsh plugin --profile web add @mymeter/dsh-cost-meter
-   ```
+```bash
+dsh plugin --profile web add @mymeter/dsh-cost-meter
+```
 
-   The current `latest` version is `0.2.1`; see the [npm package](https://www.npmjs.com/package/@mymeter/dsh-cost-meter).
+### Build and validate from source
 
-2. For source validation or development, build, pack, and verify the tarball from this repository:
+```bash
+npm ci
+npm run build
+npm run pack:plugin
+npm run verify:package
+dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.1.tgz
+```
 
-   ```bash
-   npm ci
-   npm run build
-   npm run pack:plugin
-   npm run verify:package
-   ```
+Reload the target dsh Web profile and open a session. The runtime requires Node.js `^22.19.0 || >=24.0.0` and a dsh profile with the Web bundle enabled.
 
-3. Install the generated local tarball:
+See [Getting Started](docs/getting-started.md) for configuration, credentials, updates, uninstall, cleanup, and troubleshooting.
 
-   ```bash
-   dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.1.tgz
-   ```
+## User Flows
 
-4. Restart or reload the target dsh Web profile, then open a session. Use the floating receipt in the conversation page, or open the `Token计费` conversation view for balances, stages, and token details.
+### While a request is running
 
-> [!NOTE]
-> The npm package is now published. If your dsh profile uses a custom registry, make sure
-> that registry can resolve `@mymeter/dsh-cost-meter`; the local tarball remains useful for offline validation and development.
+The Token widget in the upper-right of the conversation view shows the current request's tokens and cost. During streaming the amount is provisional; when `assistant/message.usage` arrives, the same request is corrected to a settled event. Open the widget to reach the full `Token计费` page.
 
-See [Getting Started](docs/getting-started.md) for the full install and troubleshooting flow.
+### Session billing
 
-## Provider Support
+Session details are grouped by stages and turns and include:
 
-| Capability | Current status |
+- uncached input, cached input, output, and reasoning tokens (reasoning is included in output cost);
+- current request, settled and estimated amounts, failed/unknown states, and the model pricing version;
+- budget threshold, cache-hit savings, and the current DeepSeek peak/off-peak zone with its next transition;
+- native currency totals. A manual USD/CNY lookup adds a display conversion only and never rewrites the ledger.
+
+### Global sessions and analysis
+
+The global `Token计费` page uses one set of view tabs:
+
+| View | Contents |
 | --- | --- |
-| Cost estimation | DeepSeek, xAI, OpenAI, Anthropic, Google Gemini, Moonshot/Kimi, MiniMax, Mistral, Groq, Together, Fireworks, Cerebras |
-| DeepSeek balance | `deepseek-official` is wired to `/user/balance`, with CNY/USD balances and low-balance warnings |
-| Other public balance candidates | OpenRouter, Moonshot/Kimi, xAI, Vercel AI Gateway, and similar providers require dedicated adapters and permission semantics |
-| Unsupported balances | Providers without a balance adapter are hidden from the balance area; only DeepSeek is shown today |
-| Subscription, proxy, and gateway routes | When no route-specific token price exists, dsh-cost-meter estimates by the identifiable underlying provider API price |
+| Sessions | Search, sort, status filters, and session totals; select any session for details |
+| Cost tree | Parent/child Agent costs, subtree totals, and relationship anomalies |
+| Trend/anomaly | Today/7-day/30-day overview, cost trend, top models, pricing coverage, and local anomaly hints |
 
-See [Pricing catalog sources and coverage](docs/pricing-catalog.md) for current pricing support.
+Today is bucketed by hour; 7-day and 30-day ranges use calendar days. Multi-model bars are colorized with a legend. The cost tree and analytics are loaded through on-demand Remote calls instead of every lightweight snapshot. JSON/CSV downloads use a safe field allowlist and exclude prompts, response bodies, tool content, and API keys.
+
+## UI And Demos
+
+The following assets come from a dsh Web profile. Balances, sessions, token counts, and amounts are simulated and do not represent a real account or provider invoice.
+
+### Token billing view
+
+![Token billing view: DeepSeek session cost and token buckets](docs/assets/pic0.png)
+
+When usage is unavailable or a model cannot be matched, the UI reports an estimated, unknown, or unavailable state instead of presenting `¥0.000` as a precise amount.
+
+![Token billing view: unavailable or pending billing state](docs/assets/pic1.png)
+
+### Conversation view and Token widget
+
+![Token billing widget in the conversation view](docs/assets/pic2.png)
+
+The videos are stored in `docs/assets`:
+
+- [Token widget basics in dark theme (about 15 seconds)](docs/assets/video1.mp4)
+- [Token widget generation flow in light theme (about 23 seconds)](docs/assets/video2.mp4)
+
+## Billing And Pricing
+
+### Token semantics
+
+- Billing events are deduplicated by `(sessionId, turnId, stepId, attemptId)`. Final usage replaces the streaming estimate for that request; it is not added on top.
+- Reasoning tokens are a subset of output tokens. They are shown for inspection but are not charged twice.
+- Without final usage, streaming text, reasoning, and tool deltas can only estimate output tokens. Cached and uncached input buckets require provider usage.
+- When a subscription, Code Plan, proxy, cloud platform, or gateway route has no independent unit price, the plugin estimates against an identifiable underlying provider API catalog. This is not the route's actual subscription charge.
+
+### DeepSeek official snapshot
+
+The current snapshot is `deepseek-official-pricing-2026-08-21`. Prices below are CNY per million tokens. Beijing peak hours are `09:00-12:00` and `14:00-18:00`; all other hours are off-peak.
+
+| Model | Peak: hit / miss / output | Off-peak: hit / miss / output |
+| --- | --- | --- |
+| `deepseek-v4-flash` | ¥0.10 / ¥3.00 / ¥9.00 | ¥0.05 / ¥1.50 / ¥4.50 |
+| `deepseek-v4-flash-vision-exp` | ¥0.10 / ¥3.00 / ¥9.00 | ¥0.05 / ¥1.50 / ¥4.50 |
+| `deepseek-v4-pro` | ¥0.30 / ¥9.00 / ¥27.00 | ¥0.15 / ¥4.50 / ¥13.50 |
+
+DeepSeek converts images for the vision model into input tokens. dsh-cost-meter uses provider-reported usage and does not estimate image tokens a second time.
+
+### Registered providers
+
+The pricing catalog includes DeepSeek, xAI, OpenAI, Anthropic, Google Gemini, Moonshot/Kimi, MiniMax, Mistral, Groq, Together, Fireworks, and Cerebras. Overseas catalogs retain USD as the native currency and use a versioned rate for compatible CNY fields; a current exchange rate is fetched only when the user requests a display conversion.
+
+Route aliases such as `openai-codex`, `kimi-coding`, `google-vertex`, and `azure-openai-responses` resolve to the corresponding public API catalog. Models that cannot be uniquely attributed or are not in a local snapshot remain unknown/unavailable instead of falling back to DeepSeek pricing.
+
+## Local Data And Boundaries
+
+- The published patch defaults the ledger to `$DSH_HOME/mymeter/ledger.json` with `json` format. `ledgerFormat: append` is an explicit opt-in.
+- Both formats allow only one dsh process to write a given `ledgerPath`. Format switches preserve legacy, recovery, and quarantine files; treat adjacent files as one backup/cleanup set.
+- API keys, ledger files, and balance requests stay on the Host. Client/Remote receives sanitized DTOs only. Prompts, completions, message bodies, and tool arguments are not stored in the ledger or exports.
+- The production balance adapter currently supports only the DeepSeek `/user/balance` endpoint; balance unavailability does not affect the local cost ledger.
+- Pricing ships with the plugin and is not hot-updated over the network. Signed manifests, HTTPS downloads, and SHA-256 checks currently exist as library-level capabilities only; the production plugin does not wire them in.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md): install, first validation, UI, configuration, credentials, update, uninstall, backup cleanup, and troubleshooting.
-- [Billing Semantics](docs/billing.md): estimates and settlements, token buckets, peak pricing, currencies, and catalog resolution.
+- [Getting Started](docs/getting-started.md): install, first validation, configuration, credentials, updates, uninstall, cleanup, and troubleshooting.
+- [Billing Semantics](docs/billing.md): estimates, settlement, token buckets, peak pricing, currencies, and catalog resolution.
+- [Pricing Catalog Coverage](docs/pricing-catalog.md): provider snapshots, route aliases, and unknown-model handling.
 - [Data And Privacy](docs/privacy.md): local data, credential boundaries, network requests, deletion, and self-update permissions.
-- [FAQ](docs/faq.md): cost differences, unknown models, balances, history, and installation questions.
-- [Architecture](docs/architecture.md): module boundaries, event flow, billing state, ledger, Remote DTOs, and release builds.
-- [Pricing Catalog Coverage](docs/pricing-catalog.md): provider pricing snapshots, route aliases, and unknown-model handling.
-- [Changelog](CHANGELOG.md): release changes and verification notes.
-- [中文 README](README.md): Chinese project homepage.
+- [FAQ](docs/faq.md): cost differences, balances, history, ledger formats, and installation questions.
+- [Architecture](docs/architecture.md): module boundaries, event flow, ledger, Remote, and release builds.
+- [CHANGELOG](CHANGELOG.md): release changes and verification records.
+- [中文 README](README.md): Chinese homepage.
 
 ## Status And Limits
 
-- This is an early preview. It has passed plugin build checks, `npm run verify:package`, tarball consumer checks, and isolated dsh profile install/Web/uninstall/reinstall validation.
-- `@mymeter/dsh-cost-meter@0.2.1` is published to the npm registry. New profiles can install it directly, and existing installations can use the loopback Web UI update check. Self-update still requires a `file:` baseUrl that resolves to the local dsh profile directory.
-- The final tarball has completed isolated profile validation; a real DeepSeek API key has not yet been used to reconcile production request usage and cost, and a real account balance has not yet been reconciled.
-- Pricing tables ship with code. The repository includes library-level signed-manifest validation, HTTPS downloads, SHA-256 catalog checks, and an activate/rollback seam for remote pricing updates, but the production plugin does not wire this path yet and has no official endpoint or trusted key. It therefore performs no automatic network fetch or hot catalog update.
-- CSV/JSON exports use a safe field allowlist and do not export prompts, completions, tool content, or API keys; CSV output guards against formula injection.
-- Automated multi-width visual regression, full keyboard paths, and accessibility regression are still incomplete.
-- Do not write to the same `ledgerPath` from multiple dsh processes. JSON adapter instances in one process merge disk events before writing; append adapter rejects stale writers and requires reopening.
+The current release has passed plugin build, typecheck, test, package validation, tarball consumer checks, and isolated dsh profile install/Web/uninstall/reinstall validation. Remaining caveats:
+
+- Production usage/cost reconciliation with a real DeepSeek API key and numerical reconciliation against a real balance account are still outstanding.
+- Global analytics and export depend on the corresponding Remote capabilities in the installed dsh version; older versions report them as unavailable.
+- Automated multi-width visual regression, full keyboard paths, and accessibility regression coverage are still incomplete.
 
 ## Community And License
 
-Issues and PRs are welcome for provider pricing, balance adapters, real reconciliation results, visual/accessibility regression coverage, and documentation examples. Pricing or balance changes should include official sources, snapshot dates, and tests.
+Issues and PRs are welcome for provider pricing, balance adapters, real reconciliation results, visual/accessibility coverage, and documentation examples. Pricing or balance changes should include an official source, snapshot date, and tests.
 
 - [Contributing Guide](CONTRIBUTING.md)
 - [Support Guide](SUPPORT.md)
