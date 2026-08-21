@@ -62,9 +62,17 @@ function chartLabel(range: AnalyticsRange): string {
 }
 
 function bucketLabel(range: AnalyticsRange, key: string): string {
-  if (range !== "today") return key;
+  if (range !== "today") {
+    const date = key.match(/^\d{4}-(\d{2})-(\d{2})$/u);
+    return date ? `${date[1]}-${date[2]}` : key;
+  }
   const hour = key.match(/T(\d{2})$/u)?.[1] ?? key.slice(-2);
   return `${hour}:00`;
+}
+
+function bucketTooltipLabel(range: AnalyticsRange, key: string): string {
+  if (range === "today") return bucketLabel(range, key);
+  return key;
 }
 
 function modelKey(model: Pick<TrendModel, "provider" | "model">): string {
@@ -140,7 +148,7 @@ export function AnalyticsChart({
           let segmentBottom = height - padBottom;
           return (
             <g key={bucket.key}>
-              <title>{`${displayLabel} · ${bucketAmount(bucket)} · ${bucket.requestCount} 次`}</title>
+              <title>{`${bucketTooltipLabel(range, bucket.key)} · ${bucketAmount(bucket)} · ${bucket.requestCount} 次`}</title>
               {modelSegments.length === 0 ? (
                 <rect
                   x={x}

@@ -1586,9 +1586,16 @@ function chartLabel(range) {
   return range === "7d" ? "7\u5929\u6309\u5929\u8D39\u7528\u8D8B\u52BF" : "30\u5929\u6309\u5929\u8D39\u7528\u8D8B\u52BF";
 }
 function bucketLabel(range, key) {
-  if (range !== "today") return key;
+  if (range !== "today") {
+    const date = key.match(/^\d{4}-(\d{2})-(\d{2})$/u);
+    return date ? `${date[1]}-${date[2]}` : key;
+  }
   const hour = key.match(/T(\d{2})$/u)?.[1] ?? key.slice(-2);
   return `${hour}:00`;
+}
+function bucketTooltipLabel(range, key) {
+  if (range === "today") return bucketLabel(range, key);
+  return key;
 }
 function modelKey(model) {
   return `${model.provider}\0${model.model}`;
@@ -1643,7 +1650,7 @@ function AnalyticsChart({
         const scale = modelTotal > value && modelTotal > 0 ? value / modelTotal : 1;
         let segmentBottom = height - padBottom;
         return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("g", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("title", { children: `${displayLabel} \xB7 ${bucketAmount(bucket)} \xB7 ${bucket.requestCount} \u6B21` }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("title", { children: `${bucketTooltipLabel(range, bucket.key)} \xB7 ${bucketAmount(bucket)} \xB7 ${bucket.requestCount} \u6B21` }),
           modelSegments.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
             "rect",
             {

@@ -103,6 +103,33 @@ describe("overlay visual contract", () => {
     expect(screen.getByRole("img", { name: "30天按天费用趋势" }).getAttribute("viewBox")).toBe("0 0 640 132");
   });
 
+  test("shortens daily axis labels so the recent-seven-days dates do not overlap", () => {
+    const trend = Array.from({ length: 7 }, (_, index) => ({
+      key: `2026-08-${String(index + 14).padStart(2, "0")}`,
+      startAt: "2026-08-14T00:00:00.000Z",
+      endAt: "2026-08-15T00:00:00.000Z",
+      amount: { microCny: 100, label: "¥0.000", detailLabel: "¥0.000100" },
+      totalTokens: 10,
+      requestCount: 1,
+      coverage: "complete" as const,
+      models: [],
+    }));
+
+    render(<AnalyticsChart range="7d" trend={trend} />);
+
+    const chart = screen.getByRole("img", { name: "7天按天费用趋势" });
+    expect([...chart.querySelectorAll("text")].map((item) => item.textContent)).toEqual([
+      "08-14",
+      "08-15",
+      "08-16",
+      "08-17",
+      "08-18",
+      "08-19",
+      "08-20",
+    ]);
+    expect(chart.querySelector("title")?.textContent).toContain("2026-08-14");
+  });
+
   test("renders Token计费 details with the same page navigation for every entry", () => {
     const store = createMyMeterStore({
       remote: createMockRemote("billing"),
