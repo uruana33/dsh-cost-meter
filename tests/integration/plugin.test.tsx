@@ -245,7 +245,7 @@ class FakeClientSlotContext {
   injectCount = 0;
   unregisterCount = 0;
 
-  inject(slot: string, callback: () => (() => void) | Iterable<() => void>): () => void {
+  inject(_slot: string, callback: () => (() => void) | Iterable<() => void>): () => void {
     this.injectCount += 1;
     const cleanup = callback();
     const cleanups = typeof cleanup === "function" ? [cleanup] : [...cleanup];
@@ -574,6 +574,53 @@ test("host runtime reuses an unchanged remote snapshot between client polls", ()
   expect(second).toBe(first);
   expect(Object.isFrozen(first)).toBe(true);
   expect(Object.isFrozen(first.summary)).toBe(true);
+  runtime.uninstall();
+});
+
+test("host runtime keeps snapshotVersion stable across polls and bumps it on content changes", () => {
+  const dsh = new FakeDshContext();
+  const runtime = createMyMeterHostRuntime({ dsh });
+
+  dsh.emit("mymeter:final_usage", {
+    id: "req-version-1",
+    requestStartedAt: "2026-08-17T00:00:00.000Z",
+    completedAt: "2026-08-17T00:00:01.000Z",
+    metadata: {
+      sessionId: "sess-version",
+      turnId: "turn-1",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+    },
+    usage: { cacheHitTokens: 10, cacheMissTokens: 2, outputTokens: 1 },
+    requestOutcome: "success",
+  });
+
+  const first = runtime.remote.getSnapshot();
+  const second = runtime.remote.getSnapshot();
+  expect(first.snapshotVersion).toBeDefined();
+  expect(second.snapshotVersion).toBe(first.snapshotVersion);
+
+  dsh.emit("mymeter:final_usage", {
+    id: "req-version-2",
+    requestStartedAt: "2026-08-17T00:02:00.000Z",
+    completedAt: "2026-08-17T00:02:01.000Z",
+    metadata: {
+      sessionId: "sess-version",
+      turnId: "turn-2",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+    },
+    usage: { cacheHitTokens: 5, cacheMissTokens: 1, outputTokens: 1 },
+    requestOutcome: "success",
+  });
+
+  const third = runtime.remote.getSnapshot();
+  expect(third).not.toBe(second);
+  expect(third.snapshotVersion!).toBeGreaterThan(second.snapshotVersion!);
   runtime.uninstall();
 });
 
@@ -1456,6 +1503,7 @@ test("client Cordis apply mounts Typert Remote, contributes overlay, settings, a
         childCleanup = typeof cleanup === "function" ? cleanup : undefined;
       });
       return {
+        // biome-ignore lint/suspicious/noThenProperty: intentionally thenable so Cordis `inject()` callers can await the callback result.
         then: ready.then.bind(ready),
         async dispose() {
           await ready;
@@ -1610,6 +1658,99 @@ test("Typert Remote adapter observes live values within 200ms by default", async
     expect(snapshots.at(-1)?.summary.currentRequestMicroCny).toBe(4_000);
     remote.dispose();
   } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("Typert Remote adapter skips listener notifications while the snapshot version is unchanged", async () => {
+  vi.useFakeTimers();
+  try {
+    const client = new FakeTypertClientRemote({ ...createRemoteSnapshot(), snapshotVersion: 7 });
+    const remote = await createMyMeterRemoteFromTypert(client.mymeter, { pollIntervalMs: 100 });
+    const snapshots: MyMeterRemoteSnapshot[] = [];
+    remote.subscribe((snapshot) => snapshots.push(snapshot));
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(client.snapshotReads).toBe(2);
+    // The single notification so far is the initial balance load, not the poll.
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.snapshotVersion).toBe(7);
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(snapshots).toHaveLength(1);
+
+    client.snapshot = {
+      ...createRemoteSnapshot(),
+      snapshotVersion: 8,
+      summary: { ...createRemoteSnapshot().summary, status: { code: "billing" }, currentRequestMicroCny: 4_000 },
+    };
+    await vi.advanceTimersByTimeAsync(100);
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots.at(-1)?.summary.status.code).toBe("billing");
+    expect(snapshots.at(-1)?.snapshotVersion).toBe(8);
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(snapshots).toHaveLength(2);
+    remote.dispose();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("Typert Remote adapter notifies again after a stale poll even when the version did not change", async () => {
+  vi.useFakeTimers();
+  try {
+    const client = new FakeTypertClientRemote({ ...createRemoteSnapshot(), snapshotVersion: 3 });
+    const remote = await createMyMeterRemoteFromTypert(client.mymeter, { pollIntervalMs: 100 });
+    const snapshots: MyMeterRemoteSnapshot[] = [];
+    remote.subscribe((snapshot) => snapshots.push(snapshot));
+
+    client.snapshotError = "remote down";
+    await vi.advanceTimersByTimeAsync(100);
+    expect(snapshots.at(-1)?.connection.status).toBe("stale");
+
+    client.snapshotError = null;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(snapshots.at(-1)?.connection.status).toBe("connected");
+    remote.dispose();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("Typert Remote adapter slows polling in hidden tabs and restores it when visible", async () => {
+  vi.useFakeTimers();
+  const originalVisibility = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+  const setVisibilityState = (value: string): void => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => value });
+  };
+  try {
+    const client = new FakeTypertClientRemote({ ...createRemoteSnapshot(), snapshotVersion: 1 });
+    const remote = await createMyMeterRemoteFromTypert(client.mymeter, { pollIntervalMs: 100 });
+    remote.subscribe(() => {});
+
+    setVisibilityState("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    const readsWhenHidden = client.snapshotReads;
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(client.snapshotReads).toBe(readsWhenHidden);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(client.snapshotReads).toBe(readsWhenHidden + 1);
+
+    setVisibilityState("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(client.snapshotReads).toBe(readsWhenHidden + 2);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(client.snapshotReads).toBe(readsWhenHidden + 3);
+    remote.dispose();
+  } finally {
+    if (originalVisibility) {
+      Object.defineProperty(Document.prototype, "visibilityState", originalVisibility);
+    }
     vi.useRealTimers();
   }
 });

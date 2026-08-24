@@ -206,7 +206,7 @@ Core 中 `priceTokens` 使用四舍五入除法，避免浮点累计误差。USD
 2. `BillingReadModel`：Host runtime 内的按 `eventKey`、`sessionId` 建索引结构。它维护每个 session 的 generation，用于快速取得 session events 和判断是否有变化。
 3. `CostEventRepository`：Host 层持久仓库接口。内存实现用于测试和未配置 `ledgerPath` 的运行；文件实现用于本地持久化。
 
-Host runtime 初始化时，会先从 repository 读取历史事件，转换成 core `CostEvent` 后建 journal，再用 journal 重建 read model。之后每次 `upsert` 都先更新 journal/read model，再标记 `ledgerDirty` 和 `snapshotDirty`。`batch(callback)` 会推迟落盘和快照广播，直到最外层 batch 结束。若 Adapter 实现 `commit(delta)`，runtime 只提交 dirty `eventKey` 的增量；旧 Adapter 则回退为 `replaceAll(full journal)`。提交失败会保留 dirty batch，避免把尚未落盘的事件误标为已持久化。
+Host runtime 初始化时，会先从 repository 读取历史事件，转换成 core `CostEvent` 后建 journal，再用 journal 重建 read model，并以同一份 journal 内容 seed 增量聚合器（`createIncrementalLedgerAggregator`）。之后每次 `upsert` 都先更新 journal/read model/增量聚合（对被替换事件做减量、对新事件做加量），再标记 `ledgerDirty` 和 `snapshotDirty`。快照聚合因此从 O(全部事件) 降为每次变更 O(1)（流式 projection→final 替换共享同一时间戳，不会移动 firstSeen/lastSeen 边界；真实跨界时回退为按去重时间戳的一次性扫描），随机化差分测试保证其结果与全量聚合器逐字段一致。`batch(callback)` 会推迟落盘和快照广播，直到最外层 batch 结束。若 Adapter 实现 `commit(delta)`，runtime 只提交 dirty `eventKey` 的增量；旧 Adapter 则回退为 `replaceAll(full journal)`。提交失败会保留 dirty batch，避免把尚未落盘的事件误标为已持久化。
 
 `createRemoteSnapshot` 从 journal events、Host 聚合、read model session events、active requests、余额和汇率生成 Client DTO。返回的 snapshot 会 `deepFreeze`，避免被订阅者或测试意外修改。
 
@@ -218,7 +218,8 @@ Host runtime 初始化时，会先从 repository 读取历史事件，转换成 
 - 每次写入前会 `mkdir -p dirname(filePath)`。
 - 写入 `${filePath}.${pid}.${Date.now()}.tmp`，`fsync` 文件后 `rename` 到目标路径，再尝试 `fsync` 目录。
 - 写失败时关闭 fd 并删除临时文件。
-- 写入前 `mergeFromDisk` 会重新读取磁盘内容，与当前内存事件合并后再 persist，用于降低同进程内多个 repository 实例互相覆盖的风险。
+- 写入前通过 stat 快照（mtime+size）与进程内同路径写代数判断文件是否被其他写者改动：未改动则跳过整文件读取与 JSON.parse（内存与磁盘在每次同步落盘后天然一致），改动则重新读取并与内存合并，用于降低同进程内多个 repository 实例互相覆盖的风险。
+- 落盘内容为紧凑 JSON（无缩进），以降低写放大；文件由机器读写，人工检查可用任意 JSON 格式化工具。
 
 读取恢复规则：
 
@@ -266,11 +267,11 @@ Host 暴露的是聚合后的 `MyMeterRemoteSnapshot`、session summary/detail�
 
 `packages/api/src/index.ts` 仍保留通用 `createClientSafeEvent` / `stripSensitiveFields`，会递归移除 `apiKey`、`authorization`、`prompt`、`completion`、`messages`、`input`、`output`、`content`、`requestBody`、`responseBody`、`accessToken` 以及以 token/API key 结尾的字段。当前生产 Host remote 已经在源头构造安全 DTO，不依赖把原始 session event 直接传给 Client。
 
-费用树、用量概览、趋势/异常报告和导出均按需计算，不塞入默认 `getSnapshot()`，以控制轮询 payload。用量概览只按上海自然日聚合今日/7 天/30 天：今日固定 24 个小时桶，其余范围按天补零；金额只累计已知价格事件，coverage 为 `complete`、`partial` 或 `unavailable`，未知价格在 UI 显示 `—`。Typert adapter 的 schema parser 会拒绝不合法字段类型、时间戳、桶数量或枚举值，失败时 Client adapter 保留同范围最近结果并标记错误。旧 Client 不支持按需方法时，adapter 仍可使用基本 snapshot、会话列表和详情能力。
+费用树、用量概览、趋势/异常报告和导出均按需计算，不塞入默认 `getSnapshot()`，以控制轮询 payload。轮询快照本身保持 O(1) 于历史规模：`sessions` 数组携带全部会话的轻量摘要，而 `details` 只内嵌快照当前指向会话（以及活动请求会话的基础明细）的完整明细；其余会话明细经 `getSessionDetail(sessionId)` 按需获取。Client store 为按需明细维护按 `ledgerGeneration` 失效的缓存：显式选择或固定的非当前会话在首次选择时触发一次 RPC，账本变化后重新拉取，当前会话始终走快照内嵌明细，不产生额外请求。用量概览只按上海自然日聚合今日/7 天/30 天：今日固定 24 个小时桶，其余范围按天补零；金额只累计已知价格事件，coverage 为 `complete`、`partial` 或 `unavailable`，未知价格在 UI 显示 `—`。Typert adapter 的 schema parser 会拒绝不合法字段类型、时间戳、桶数量或枚举值，失败时 Client adapter 保留同范围最近结果并标记错误。旧 Client 不支持按需方法时，adapter 仍可使用基本 snapshot、会话列表和详情能力。
 
 ## Client Store 与轮询
 
-Client adapter `createMyMeterRemoteFromTypert` 启动时先 `getSnapshot()`，随后默认每 200ms 轮询轻量 Host snapshot。这一频率是为了在 provider final usage 到达前展示输出增量估算。余额请求与快照轮询解耦：首次快照后请求一次，之后默认每 5 分钟、页面恢复可见或用户手动点击“刷新余额”时更新；余额请求自带 10 秒超时、并发去重和失败退避，失败时保留 `stale` 或 `unavailable` 状态。
+Client adapter `createMyMeterRemoteFromTypert` 启动时先 `getSnapshot()`，随后默认每 200ms 轮询轻量 Host snapshot。这一频率是为了在 provider final usage 到达前展示输出增量估算。Host 快照携带单调递增的 `snapshotVersion`，只在内容真正变化时递增；adapter 比较前后版本号，相同则跳过订阅者通知，空闲时客户端不会重建 view model 或重渲染 React 树。旧版快照没有该字段时保持每次通知的兼容行为。页面进入后台（`document.visibilityState === "hidden"`）时轮询自动降频到 `max(pollIntervalMs, 2000)`（可用 `hiddenPollIntervalMs` 配置），回到前台立即刷新并恢复原频率。余额请求与快照轮询解耦：首次快照后请求一次，之后默认每 5 分钟、页面恢复可见或用户手动点击“刷新余额”时更新；余额请求自带 10 秒超时、并发去重和失败退避，失败时保留 `stale` 或 `unavailable` 状态。
 
 `createMyMeterStore` 负责：
 
@@ -319,7 +320,7 @@ npm run verify
 1. 检查 `packages/plugin/package.json` 的包名、public access 和导出产物。
 2. `npm pack` 插件目录到临时目录。
 3. 确认 tarball 不包含 `src/` 或 sourcemap，并且包含 `LICENSE`、`README.md`、`cordis.patch.yml` 和关键声明文件。
-4. 将仓库根目录当前版本 tarball（例如 `mymeter-dsh-cost-meter-0.2.1.tgz`）与临时 `npm pack` 的发布文件逐文件 hash 比较；比较的是解压后的 package 文件内容，不依赖 gzip/tar 元数据。
+4. 将仓库根目录当前版本 tarball（例如 `mymeter-dsh-cost-meter-0.2.2.tgz`）与临时 `npm pack` 的发布文件逐文件 hash 比较；比较的是解压后的 package 文件内容，不依赖 gzip/tar 元数据。
 5. 在临时 consumer 中 symlink 包和 React 类型，编译导入 `.`、`/host`、`/client`、`/remote`。
 6. 用 Node 动态导入发布包主入口。
 

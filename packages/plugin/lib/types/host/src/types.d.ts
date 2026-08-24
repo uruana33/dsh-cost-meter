@@ -61,7 +61,7 @@ export interface CostEventRecord {
     turnId: string;
     stepId: string;
     attemptId: string;
-    parentSessionId: string;
+    parentSessionId?: string;
     provider: string;
     model: string;
     reasoningEffort: string;

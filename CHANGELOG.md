@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.2 - 2026-08-24
+
+### Changed
+
+- 轮询快照瘦身：`getSnapshot()` 的 `details` 只内嵌快照当前指向会话（及活动请求会话基础明细）的完整明细，其余会话明细改经 `getSessionDetail(sessionId)` 按需获取；`sessions` 摘要数组保持覆盖全部会话。以 PERF-501 的 500 会话 fixture 实测，快照体积从 1.24MB 降至 196KB（-84%，内嵌明细数 430 → 1），且每 200ms 轮询一次。Client store 为按需明细增加按 `ledgerGeneration` 失效的缓存，显式选择非当前会话时自动拉取；当前会话浮窗路径仍为纯同步。`MyMeterRemote` 新增可选 `getSessionDetail`。
+
+### Performance
+
+- Host 快照聚合改为增量维护：新增 `createIncrementalLedgerAggregator`，在 journal 变更时对全局/按会话/按日摘要做 O(1) 增量加减（流式 projection→final 替换为同时间戳的移除+加入，边界时间戳不移动），`getSnapshot()` 重建不再对全部历史事件做全量重聚合；随机化差分测试锁定与全量聚合器逐字段一致。
+- JSON 文件账本写路径优化：`commit`/`upsert`/`replaceAll` 通过 stat 快照 + 进程内写代数双校验识别"文件未被其他写者改动"，跳过每次提交的整文件读取与 JSON.parse；提交不再全量重建内存仓库，改为顺序 upsert；落盘改为紧凑 JSON（去除 pretty-print）。PERF-404 实测（500 会话）：commit P50 19.2ms→11.3ms、P95 33.8ms→12.9ms（-62%）、回填耗时 -45%、存储 -22%；进程内多实例同路径合并语义不变（有测试覆盖）。
+- Host `getSnapshot()` 新增单调递增的 `snapshotVersion`：仅在快照内容真正变化时递增，Typert Remote adapter 轮询时比较版本号，无变化不再通知订阅者，空闲时客户端不再每 200ms 重建 view model 和重渲染 React 树。旧版 Host（无该字段）保持原有每次通知行为。
+- Remote adapter 轮询感知页面可见性：后台标签页自动降频到 `max(pollIntervalMs, 2000)`（可用 `hiddenPollIntervalMs` 配置），回到前台立即刷新并恢复原频率。
+- Host final usage 结算改为通过 journal 索引 (`getByKey`) 查找同请求事件，替代对全部账本事件的线性扫描。
+- 快照缓存失效检查中的 context 指纹由每轮询 JSON.stringify 全部会话改为结构化字段比较，消除轮询路径上的重复序列化。
+- Client bundle 开启 esbuild minify，浏览器端产物从约 259KB 降至约 138KB。
+
+### Added
+
+- 引入 Biome lint（推荐规则集，构建产物目录已排除），新增 `npm run lint` 并纳入 `npm run verify` 与 CI 门禁；CI 增加 Node.js 24 矩阵位。
+
+### Fixed
+
+- 修复 Token 数增大后计费浮窗布局溢出：三行分项、顶栏汇总、小票轮次与合计改用紧凑格式（10 万以上显示 `12.3万`/`1.23亿`，金额按量级收敛小数位），并为所有定宽行补齐 flex 收缩保护——Token 侧可省略号截断（悬停可见完整值），金额侧永不压缩。详情页与图表仍显示完整千分位数值。
+
 ## 0.2.0 - 2026-08-21
 
 ### Added

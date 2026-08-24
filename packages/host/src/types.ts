@@ -63,7 +63,7 @@ export interface CostEventRecord {
   turnId: string;
   stepId: string;
   attemptId: string;
-  parentSessionId: string;
+  parentSessionId?: string;
   provider: string;
   model: string;
   reasoningEffort: string;
@@ -319,7 +319,9 @@ export function normalizeCostEvent(input: CostEventInput): CostEventRecord {
     turnId: asText(input.turnId),
     stepId: asText(input.stepId),
     attemptId: asText(input.attemptId),
-    parentSessionId: asText(input.parentSessionId),
+    // Absent stays absent: stamping the "unknown" sentinel here poisoned the
+    // ledger (the cost-tree builder treats "unknown" as "no parent").
+    ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
     provider: asText(input.provider),
     model: asText(input.model),
     reasoningEffort: asText(input.reasoningEffort),

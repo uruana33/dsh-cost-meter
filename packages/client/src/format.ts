@@ -6,7 +6,7 @@ export function formatMicroCny(microCny: number, decimals = 3): string {
 
 export function formatCurrencyMinor(amountMinor: number, currency = "CNY", decimals = 3): string {
   if (amountMinor === 0) {
-    return currencySymbol(currency) + `0.${"0".repeat(decimals)}`;
+    return `${currencySymbol(currency)}0.${"0".repeat(decimals)}`;
   }
 
   const value = amountMinor / 1_000_000;
@@ -25,6 +25,42 @@ function currencySymbol(currency: string): string {
 
 export function formatTokenCount(tokens: number): string {
   return new Intl.NumberFormat("en-US").format(tokens);
+}
+
+/**
+ * Compact token formatting for tight layouts (the floating meter rows). Keeps
+ * the full grouped form under 100k and switches to 万/亿 scales above it, so a
+ * multi-million-token session still fits a narrow column without overflow.
+ */
+export function formatTokenCountCompact(tokens: number): string {
+  if (!Number.isFinite(tokens)) return "0";
+  const absolute = Math.abs(tokens);
+  if (absolute < 100_000) {
+    return formatTokenCount(tokens);
+  }
+  if (absolute < 100_000_000) {
+    return `${trimTrailingZero((tokens / 10_000).toFixed(1))}万`;
+  }
+  return `${trimTrailingZero((tokens / 100_000_000).toFixed(2))}亿`;
+}
+
+function trimTrailingZero(value: string): string {
+  let result = value;
+  while (result.endsWith("0")) {
+    result = result.slice(0, -1);
+  }
+  return result.endsWith(".") ? result.slice(0, -1) : result;
+}
+
+/**
+ * Compact currency formatting for tight layouts: keeps full precision below
+ * one unit, two decimals below 100 units, and rounds to integers above that,
+ * so large totals stop widening fixed-width meter rows.
+ */
+export function formatCurrencyMinorCompact(amountMinor: number, currency = "CNY", decimals = 3): string {
+  const value = Math.abs(amountMinor) / 1_000_000;
+  const compactDecimals = value >= 100 ? 0 : value >= 1 ? Math.min(2, decimals) : decimals;
+  return formatCurrencyMinor(amountMinor, currency, compactDecimals);
 }
 
 export function formatTokenBucketLabel(label: string): string {

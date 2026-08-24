@@ -53,8 +53,9 @@ test("Remote listSessions skips details and getSessionDetail builds only the req
   expect(contextBreakdown).toHaveBeenCalledTimes(2);
 
   const snapshot = runtime.remote.getSnapshot();
-  expect(Object.keys(snapshot.details).sort()).toEqual(["sess-a", "sess-b"]);
-  expect(contextBreakdown).toHaveBeenCalledWith("sess-a");
+  // Slim snapshot contract: only the latest-activity session embeds a detail.
+  expect(Object.keys(snapshot.details)).toEqual(["sess-b"]);
+  expect(contextBreakdown).not.toHaveBeenCalledWith("sess-a");
 
   runtime.uninstall();
 });
@@ -97,8 +98,11 @@ test("Remote summary and detail split remains DTO-compatible with getSnapshot", 
 
   const snapshot = runtime.remote.getSnapshot();
   await expect(runtime.remote.listSessions()).resolves.toEqual(snapshot.sessions);
-  for (const session of snapshot.sessions) {
-    await expect(runtime.remote.getSessionDetail(session.id)).resolves.toEqual(snapshot.details[session.id]);
+  // Slim snapshot contract: exactly the current session ships a full detail,
+  // and the on-demand RPC reproduces it byte-for-byte.
+  expect(Object.keys(snapshot.details)).toEqual([snapshot.currentSessionId]);
+  for (const [sessionId, detail] of Object.entries(snapshot.details)) {
+    await expect(runtime.remote.getSessionDetail(sessionId)).resolves.toEqual(detail);
   }
 
   runtime.uninstall();
@@ -113,11 +117,14 @@ test("Remote detail differential follows getSnapshot when multiple sessions are 
   emitActiveRequest(dsh, "sess-active-latest", { lastActivityAt: "2026-08-17T04:00:05.000Z" });
 
   const snapshot = runtime.remote.getSnapshot();
-  expect(snapshot.details["sess-active-earlier"]?.status).toBe("settled");
+  // Only the latest active request's session rides the polled snapshot; the
+  // earlier one stays reachable through the on-demand detail RPC.
+  expect(Object.keys(snapshot.details)).toEqual(["sess-active-latest"]);
   expect(snapshot.details["sess-active-latest"]?.status).toBe("billing");
-  await expect(runtime.remote.getSessionDetail("sess-active-earlier")).resolves.toEqual(
-    snapshot.details["sess-active-earlier"],
-  );
+  await expect(runtime.remote.getSessionDetail("sess-active-earlier")).resolves.toMatchObject({
+    id: "sess-active-earlier",
+    status: "settled",
+  });
   await expect(runtime.remote.getSessionDetail("sess-active-latest")).resolves.toEqual(
     snapshot.details["sess-active-latest"],
   );
@@ -353,10 +360,17 @@ function emitFinalUsage(
   offsetMs: number,
   metadata: { provider?: string; model?: string; parentSessionId?: string } = {},
 ): void {
+  // Anchor to today 00:00 UTC (= 08:00 Asia/Shanghai, deterministic DeepSeek
+  // off-peak zone) instead of a hard-coded date: the date ages out of the 7d
+  // usage-overview window, and a "now"-based hour would drift across the
+  // peak/off-peak boundary.
+  const dayStart = new Date();
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const anchor = dayStart.getTime();
   dsh.emit("mymeter:final_usage", {
     id,
-    requestStartedAt: new Date(Date.UTC(2026, 7, 17, 4, 0, 0, offsetMs)).toISOString(),
-    completedAt: new Date(Date.UTC(2026, 7, 17, 4, 0, 1, offsetMs)).toISOString(),
+    requestStartedAt: new Date(anchor + offsetMs).toISOString(),
+    completedAt: new Date(anchor + offsetMs + 1_000).toISOString(),
     metadata: {
       sessionId,
       turnId,

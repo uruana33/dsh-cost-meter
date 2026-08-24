@@ -7,7 +7,7 @@ Provider-aware LLM cost metering, local ledger, balance display, and dsh Web UI 
 
 ## Current Release
 
-Version `0.2.1` adds a today/7-day/30-day usage overview with cost, token, request, coverage, and top-model summaries. The `Token计费` page now groups sessions, Agent cost trees, and trend/anomaly analysis behind one set of tabs, with model-colored trends and safe JSON/CSV exports. The DeepSeek snapshot also includes `deepseek-v4-flash-vision-exp` at the `deepseek-v4-flash` peak/off-peak rates; image tokens come from provider usage.
+Version `0.2.2` adds a today/7-day/30-day usage overview with cost, token, request, coverage, and top-model summaries. The `Token计费` page now groups sessions, Agent cost trees, and trend/anomaly analysis behind one set of tabs, with model-colored trends and safe JSON/CSV exports. The DeepSeek snapshot also includes `deepseek-v4-flash-vision-exp` at the `deepseek-v4-flash` peak/off-peak rates; image tokens come from provider usage.
 
 ## Requirements
 
@@ -27,7 +27,7 @@ Version `0.2.1` adds a today/7-day/30-day usage overview with cost, token, reque
 
 ## Install
 
-The package is published to the npm registry as `0.2.1`:
+The package is published to the npm registry as `0.2.2`:
 
 ```sh
 dsh plugin --profile web add @mymeter/dsh-cost-meter
@@ -40,7 +40,7 @@ npm ci
 npm run build
 npm run pack:plugin
 npm run verify:package
-dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.1.tgz
+dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.2.tgz
 ```
 
 The package ships prebuilt Host, Client, Remote, invariant, and declaration artifacts. Direct Git installation is not supported because the source build depends on this repository's workspaces.

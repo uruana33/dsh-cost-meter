@@ -116,4 +116,12 @@ export type {
   CurrencyTotalView,
   ExchangeRateView,
 } from "./view-model";
-export { createAmountView, formatCurrencyMinor, formatMicroCny, formatStatusLabel, formatTokenCount } from "./format";
+export {
+  createAmountView,
+  formatCurrencyMinor,
+  formatCurrencyMinorCompact,
+  formatMicroCny,
+  formatStatusLabel,
+  formatTokenCount,
+  formatTokenCountCompact,
+} from "./format";

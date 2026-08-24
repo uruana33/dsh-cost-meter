@@ -11,7 +11,7 @@ dsh-cost-meter is a multi-provider LLM token cost meter for dsh / DeepSeek Harne
 
 ## Current Release
 
-The published package is [`@mymeter/dsh-cost-meter@0.2.1`](https://www.npmjs.com/package/@mymeter/dsh-cost-meter). Recent release highlights:
+The published package is [`@mymeter/dsh-cost-meter@0.2.2`](https://www.npmjs.com/package/@mymeter/dsh-cost-meter). Recent release highlights:
 
 - Global usage overview for today, the last 7 days, and the last 30 days, with cost, tokens, request count, coverage, and top models.
 - A unified `Token计费` page with session, cost-tree, and trend/anomaly views; model-colored trends with range switching; and JSON/CSV ledger export.
@@ -35,7 +35,7 @@ npm ci
 npm run build
 npm run pack:plugin
 npm run verify:package
-dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.1.tgz
+dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.2.tgz
 ```
 
 Reload the target dsh Web profile and open a session. The runtime requires Node.js `^22.19.0 || >=24.0.0` and a dsh profile with the Web bundle enabled.

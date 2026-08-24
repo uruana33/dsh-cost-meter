@@ -44,7 +44,7 @@ const ACTIVE_REQUEST_EVENT = "mymeter:active_request";
 const STREAMING_ESTIMATE_MIN_TOKEN_STEP = 8;
 const STREAMING_ESTIMATE_MIN_INTERVAL_MS = 100;
 const HISTORY_RECOVERY_SOURCE_KEY = "dsh-session-history";
-const HISTORY_RECOVERY_PROJECTION_VERSION = "cordis-history-v1";
+const HISTORY_RECOVERY_PROJECTION_VERSION = "cordis-history-v2";
 const HISTORY_CHECKPOINT_REFRESH_DEBOUNCE_MS = 250;
 
 export interface MyMeterCordisHostOptions {
@@ -138,6 +138,23 @@ export function createMyMeterCordisHostRuntime({
     },
   };
 
+  // Durable subagent parent links observed from session headers anywhere —
+  // live events, startup listing, and history-recovery list/read. The cost
+  // tree merges these at build time so nesting does not depend on per-request
+  // metadata surviving the whole ingest pipeline.
+  const observedParentLinks = new Map<string, string>();
+  const noteSessionHeader = (session: unknown): void => {
+    const record = asRecord(session);
+    // Accepted shapes: the session object itself, {header}, a persistence
+    // snapshot ref, or the query read payload {session: <storage header>}.
+    const header = asRecord(record.header ?? record.session ?? record);
+    const id = text(record.id ?? header.id);
+    if (!id) return;
+    if (observedParentLinks.has(id)) return;
+    const parent = sessionParentLink({ id, header });
+    if (parent && parent !== id) observedParentLinks.set(id, parent);
+  };
+
   const runtime = createMyMeterHostRuntime({
     dsh,
     balance,
@@ -151,6 +168,7 @@ export function createMyMeterCordisHostRuntime({
       ctx.logger?.warn(`mymeter: history checkpoint refresh failed (${errorMessage(error)})`);
     },
     contextBreakdown: (sessionId) => readContextBreakdown(projectionService, sessionRefs.get(sessionId)),
+    observedSessionParents: () => Object.fromEntries(observedParentLinks),
   });
   const sessions = new Map<string, SessionState>();
   const seededEventCounts = new Map<string, number>();
@@ -159,7 +177,12 @@ export function createMyMeterCordisHostRuntime({
     rememberSession(sessionRefs, session);
     const sessionId = text((session as SessionLike)?.id ?? (session as SessionLike)?.sessionId);
     const events = (session as { events?: unknown }).events;
-    if (!sessionId || !Array.isArray(events) || events.length === 0) return false;
+    if (!sessionId || !Array.isArray(events) || events.length === 0) {
+      // Header-only sightings still contribute their parent link.
+      noteSessionHeader(session);
+      return false;
+    }
+    noteSessionHeader(session);
     const seededCount = seededEventCounts.get(sessionId) ?? 0;
     if (seededEventCounts.has(sessionId) && events.length <= seededCount) return true;
     runtime.batch(() => {
@@ -171,7 +194,7 @@ export function createMyMeterCordisHostRuntime({
     return true;
   };
   const history = createHistoryRecovery({
-    source: createCordisHistoryRecoverySource(ctx),
+    source: createCordisHistoryRecoverySource(ctx, noteSessionHeader),
     checkpoint: checkpointController,
     target: {
       replayBatch(historySessions: readonly HistoryReplaySession[]) {
@@ -201,6 +224,7 @@ export function createMyMeterCordisHostRuntime({
       history.markLive(text((session as SessionLike)?.id ?? (session as SessionLike)?.sessionId));
     } else {
       rememberSession(sessionRefs, session);
+      noteSessionHeader(session);
     }
     const sessionId = text((session as SessionLike)?.id ?? (session as SessionLike)?.sessionId);
     const events = (session as { events?: unknown }).events;
@@ -476,6 +500,7 @@ interface SessionState {
   model: string;
   reasoningEffort: string;
   agentPreset: string;
+  parentSessionId: string | undefined;
   startedAt: number | string | null;
   turn: number | null;
   step: number | null;
@@ -490,6 +515,7 @@ interface RequestMetadataSnapshot {
   model: string;
   reasoningEffort: string;
   agentPreset: string;
+  parentSessionId?: string | undefined;
   startedAt: number | string | null;
   attemptId: string;
   metadataLocked: boolean;
@@ -525,13 +551,6 @@ interface SessionProjectionService {
   snapshot(session: unknown): {
     values?: Record<string, unknown>;
   };
-}
-
-interface SessionEventLike {
-  type?: unknown;
-  time?: unknown;
-  seq?: unknown;
-  data?: unknown;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -616,6 +635,9 @@ function bridgeSessionEvent(
   sessions.set(sessionId, state);
   if (state.agentPreset === "unknown") {
     state.agentPreset = sessionAgentPreset(session) || state.agentPreset;
+  }
+  if (state.parentSessionId === undefined) {
+    state.parentSessionId = sessionParentLink(session);
   }
   const data = asRecord(record.data);
   const time = finiteTime(record.time);
@@ -816,6 +838,7 @@ function createSessionState(): SessionState {
     model: "unknown",
     reasoningEffort: "unknown",
     agentPreset: "unknown",
+    parentSessionId: undefined,
     startedAt: null,
     turn: null,
     step: null,
@@ -829,6 +852,26 @@ function createSessionState(): SessionState {
 function sessionAgentPreset(session: unknown): string {
   const record = asRecord(session);
   return text(asRecord(record.header).agentPreset) || text(record.agentPreset);
+}
+
+/**
+ * dsh marks subagent child sessions on their durable header: `origin` is
+ * "subagent", `delegationDepth` is positive, and `parentSession` names the
+ * delegating session. Forked sessions also carry `parentSession` (seed
+ * lineage) but are NOT subagents, so the origin/depth signals gate the link.
+ */
+function sessionParentLink(session: unknown): string | undefined {
+  const record = asRecord(session);
+  const header = asRecord(record.header);
+  const origin = text(header.origin) || text(record.origin);
+  const rawDepth = header.delegationDepth ?? record.delegationDepth;
+  const delegated = origin === "subagent"
+    || (typeof rawDepth === "number" && Number.isSafeInteger(rawDepth) && rawDepth > 0);
+  if (!delegated) return undefined;
+  return text(header.parentSession)
+    || text(record.parentSession)
+    || text(asRecord(record.session).parentSession)
+    || undefined;
 }
 
 function eventIsInHistory(events: readonly unknown[], event: unknown): boolean {
@@ -855,6 +898,7 @@ function freezeRequestMetadata(
     model: state.model,
     reasoningEffort: state.reasoningEffort,
     agentPreset: state.agentPreset,
+    parentSessionId: state.parentSessionId,
     startedAt,
     attemptId,
     metadataLocked: false,
@@ -879,6 +923,9 @@ function completeActiveRequestMetadata(state: SessionState): void {
   request.provider = state.provider;
   request.model = state.model;
   request.reasoningEffort = state.reasoningEffort;
+  if (request.parentSessionId === undefined && state.parentSessionId !== undefined) {
+    request.parentSessionId = state.parentSessionId;
+  }
 }
 
 function completeRequestMetadataFromAssistantMessage(request: RequestMetadataSnapshot, data: UnknownRecord): void {
@@ -960,6 +1007,7 @@ function requestMetadata(
     model: request.model,
     reasoningEffort: request.reasoningEffort,
     agentPreset: request.agentPreset,
+    ...(request.parentSessionId ? { parentSessionId: request.parentSessionId } : {}),
   };
 }
 

@@ -15,6 +15,13 @@ export interface BuildSessionCostTreeOptions<Detail = unknown> {
   readonly aggregation: LedgerAggregation;
   readonly events: readonly SessionCostTreeEvent[];
   readonly details?: Readonly<Record<string, Detail>> | undefined;
+  /**
+   * Parent links observed from durable session headers (dsh stamps
+   * `parentSession` + `origin: "subagent"` outside the event log). Used when
+   * an event stream itself carries no `parentSessionId`, so the tree still
+   * nests even if per-request metadata was lost before headers were seen.
+   */
+  readonly observedParents?: Readonly<Record<string, string>> | undefined;
 }
 
 export interface MissingParentSession {
@@ -70,9 +77,10 @@ export function buildSessionCostTree<Detail = unknown>({
   aggregation,
   events,
   details = {},
+  observedParents,
 }: BuildSessionCostTreeOptions<Detail>): SessionCostTree<Detail> {
-  const sessionIds = orderedSessionIds(aggregation, events, details);
-  const parentBySession = observeParents(events);
+  const sessionIds = orderedSessionIds(aggregation, events, details, observedParents);
+  const parentBySession = mergeObservedParents(observeParents(events), observedParents);
   const nodes = createNodes(sessionIds, aggregation, details, parentBySession);
   const parentForTree = new Map<string, string>();
   const missingParents: MissingParentSession[] = [];
@@ -131,6 +139,7 @@ function orderedSessionIds<Detail>(
   aggregation: LedgerAggregation,
   events: readonly SessionCostTreeEvent[],
   details: Readonly<Record<string, Detail>>,
+  observedParents?: Readonly<Record<string, string>>,
 ): string[] {
   const ids = new Set<string>();
   for (const id of aggregation.sessions.keys()) ids.add(id);
@@ -141,7 +150,30 @@ function orderedSessionIds<Detail>(
   for (const id of Object.keys(details)) {
     if (normalizeSessionId(id)) ids.add(id);
   }
+  // Header-observed children participate even when their events were lost;
+  // their parents become nodes too (zero-cost if they have no own events).
+  for (const [child, parent] of Object.entries(observedParents ?? {})) {
+    if (normalizeSessionId(child)) ids.add(child);
+    if (normalizeSessionId(parent)) ids.add(parent);
+  }
   return [...ids].sort();
+}
+
+/**
+ * Header observations are authoritative and fresher than anything inferred
+ * from request metadata, so they override event-derived links.
+ */
+function mergeObservedParents(
+  observed: Map<string, ParentObservation>,
+  observedParents?: Readonly<Record<string, string>>,
+): Map<string, ParentObservation> {
+  for (const [childRaw, parentRaw] of Object.entries(observedParents ?? {})) {
+    const child = normalizeSessionId(childRaw);
+    const parent = normalizeSessionId(parentRaw);
+    if (!child || !parent || child === parent) continue;
+    observed.set(child, { parentSessionId: parent, activity: "", sequence: Number.MAX_SAFE_INTEGER });
+  }
+  return observed;
 }
 
 function observeParents(events: readonly SessionCostTreeEvent[]): Map<string, ParentObservation> {

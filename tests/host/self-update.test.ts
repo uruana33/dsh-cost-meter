@@ -203,7 +203,7 @@ test("does not invoke the installer for arbitrary version-like command input", a
 test("registers a loopback-only update RPC and derives profileDir from ctx.baseUrl", async () => {
   const profileDir = "/profiles/main";
   const installs: Parameters<MyMeterPluginUpdateDependencies["installer"]["installExact"]>[0][] = [];
-  const ctx = new FakeUpdateHostContext(pathToFileURL(profileDir).href + "/");
+  const ctx = new FakeUpdateHostContext(`${pathToFileURL(profileDir).href}/`);
 
   const uninstall = applyCordisHost(ctx, {
     update: {

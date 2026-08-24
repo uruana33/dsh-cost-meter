@@ -350,11 +350,20 @@ export interface MyMeterRemoteSnapshot {
   details: Record<string, RemoteSessionDetail>;
   exchangeRate?: RemoteExchangeRateSnapshot;
   ledgerGeneration?: number;
+  /**
+   * Monotonic counter bumped by the host whenever snapshot content actually
+   * changes. Remote adapters compare it between polls to skip redundant
+   * listener notifications; `undefined` means the host predates the field,
+   * so adapters must keep notifying on every poll.
+   */
+  snapshotVersion?: number;
 }
 
 export interface MyMeterRemote {
   getSnapshot(): MyMeterRemoteSnapshot;
   subscribe(listener: (snapshot: MyMeterRemoteSnapshot) => void): () => void;
+  /** On-demand full detail for one session; the polled snapshot embeds only the current session's. */
+  getSessionDetail?(sessionId: string): Promise<RemoteSessionDetail | null>;
   refreshExchangeRate?(): Promise<RemoteExchangeRateSnapshot | void>;
   refreshBalance?(): Promise<RemoteBalanceSnapshot | void>;
   getSessionCostTree?(): Promise<RemoteSessionCostTree>;
@@ -561,7 +570,7 @@ export interface SnappedOverlayPosition {
   dockedEdge: "left" | "right" | "top" | "bottom" | null;
 }
 
-const RECEIPT_OVERLAY_SIZE = { width: 155, height: 280 };
+const RECEIPT_OVERLAY_SIZE = { width: 188, height: 280 };
 
 export function snapOverlayPosition(
   position: { x: number; y: number },
@@ -599,10 +608,15 @@ export function buildViewModel(
   settings: MyMeterSettings,
   ui: MyMeterStoreUiState,
   asyncState = createIdleAsyncState({ treeAvailable: false, analyticsAvailable: false, usageAvailable: false, exportAvailable: false }),
+  fetchedDetails: ReadonlyMap<string, RemoteSessionDetail> = new Map(),
 ): MyMeterViewModel {
   const activeId = ui.selectedSessionId ?? settings.pinnedSessionId ?? snapshot.currentSessionId;
   const activeSession = activeId ? snapshot.sessions.find((session) => session.id === activeId) ?? null : null;
-  const rawDetail = activeId ? snapshot.details[activeId] ?? null : null;
+  // The polled snapshot embeds only the current session's detail. Explicitly
+  // selected sessions are resolved through the on-demand detail cache.
+  const rawDetail = (activeId
+    ? snapshot.details[activeId] ?? fetchedDetails.get(activeId) ?? null
+    : null);
   const detail = rawDetail ? mapDetail(rawDetail, settings) : null;
   const activeStatus = detail?.status ?? activeSession?.status ?? null;
   const provider = activeId
@@ -796,6 +810,42 @@ export function createMyMeterStore(options: {
     }
   };
 
+  // On-demand detail cache. The polled snapshot embeds only the current
+  // session's detail; explicitly selected (or pinned) sessions are fetched
+  // once per ledger generation through `getSessionDetail`.
+  const fetchedDetails = new Map<string, RemoteSessionDetail>();
+  let fetchedDetailsGeneration = remoteSnapshot.ledgerGeneration;
+  let detailRequestId = 0;
+  let inFlightDetailSessionId: string | null = null;
+  let disposed = false;
+
+  const resolveDesiredDetailId = (): string | null => {
+    return ui.selectedSessionId ?? settings.pinnedSessionId ?? remoteSnapshot.currentSessionId;
+  };
+
+  const ensureActiveDetailLoaded = (): void => {
+    const sessionId = resolveDesiredDetailId();
+    if (!sessionId || !remote.getSessionDetail) return;
+    // The current session's detail rides the polled snapshot; no RPC needed.
+    if (remoteSnapshot.details[sessionId] !== undefined) return;
+    if (inFlightDetailSessionId === sessionId && fetchedDetailsGeneration === remoteSnapshot.ledgerGeneration) return;
+    if (fetchedDetails.has(sessionId) && fetchedDetailsGeneration === remoteSnapshot.ledgerGeneration) return;
+
+    const requestId = ++detailRequestId;
+    inFlightDetailSessionId = sessionId;
+    void remote.getSessionDetail(sessionId).then((detail) => {
+      inFlightDetailSessionId = null;
+      if (disposed || requestId !== detailRequestId) return;
+      if (!detail) return;
+      if (fetchedDetailsGeneration !== remoteSnapshot.ledgerGeneration) return;
+      fetchedDetails.set(sessionId, detail);
+      state = recompute(remoteSnapshot, settings, ui, asyncState, fetchedDetails);
+      emit();
+    }).catch(() => {
+      inFlightDetailSessionId = null;
+    });
+  };
+
   const unsubscribeRemote = remote.subscribe((snapshot) => {
     const ledgerChanged = snapshot.ledgerGeneration !== undefined
       && snapshot.ledgerGeneration !== lastLedgerGeneration;
@@ -804,8 +854,13 @@ export function createMyMeterStore(options: {
     lastOverviewDayKey = currentOverviewDayKey;
     lastLedgerGeneration = snapshot.ledgerGeneration;
     remoteSnapshot = snapshot;
-    state = recompute(remoteSnapshot, settings, ui, asyncState);
+    if (ledgerChanged && snapshot.ledgerGeneration !== fetchedDetailsGeneration) {
+      fetchedDetails.clear();
+      fetchedDetailsGeneration = snapshot.ledgerGeneration;
+    }
+    state = recompute(remoteSnapshot, settings, ui, asyncState, fetchedDetails);
     emit();
+    ensureActiveDetailLoaded();
     if ((ledgerChanged || dayChanged) && remote.getUsageOverview && asyncState.usageOverview.data) {
       usageOverviewCache.clear();
       if (usageOverviewRefreshTimer === null) {
@@ -855,6 +910,7 @@ export function createMyMeterStore(options: {
       };
     },
     destroy() {
+      disposed = true;
       unsubscribeRemote();
       unsubscribeSettings();
       if (usageOverviewRefreshTimer !== null) clearTimeout(usageOverviewRefreshTimer);
@@ -863,6 +919,7 @@ export function createMyMeterStore(options: {
     },
     selectSession(sessionId) {
       setUi({ selectedSessionId: sessionId, activePanel: sessionId ? "detail" : "sessions" });
+      ensureActiveDetailLoaded();
     },
     syncCurrentSession(sessionId) {
       if (settings.pinnedSessionId !== null) {
@@ -1087,12 +1144,13 @@ function recompute(
   settings: MyMeterSettings,
   ui: MyMeterStoreUiState,
   asyncState: MyMeterAsyncState,
+  fetchedDetails: ReadonlyMap<string, RemoteSessionDetail> = new Map(),
 ): MyMeterStoreState {
   return {
     remote,
     settings,
     ui,
-    viewModel: buildViewModel(remote, settings, ui, asyncState),
+    viewModel: buildViewModel(remote, settings, ui, asyncState, fetchedDetails),
   };
 }
 
@@ -1431,8 +1489,9 @@ function mapBalances(snapshot: MyMeterRemoteSnapshot, activeProvider: string): M
   const providers = uniqueProviders([
     activeProvider,
     snapshot.summary.provider,
+    // Session summaries cover every billable session; the slim snapshot only
+    // embeds one detail, so providers must not be sourced from details.
     ...snapshot.sessions.map((session) => session.provider),
-    ...Object.values(snapshot.details).map((detail) => detail.provider),
   ]);
   return providers
     .filter(isDeepSeekProvider)

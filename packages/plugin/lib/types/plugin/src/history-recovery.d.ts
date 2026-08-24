@@ -63,4 +63,4 @@ export interface HistoryReplaySession {
     events: readonly unknown[];
 }
 export declare function createHistoryRecovery(options: HistoryRecoveryOptions): HistoryRecovery;
-export declare function createCordisHistoryRecoverySource(ctx: MyMeterCordisContext): HistoryRecoverySource;
+export declare function createCordisHistoryRecoverySource(ctx: MyMeterCordisContext, onSessionHeader?: (record: unknown) => void): HistoryRecoverySource;

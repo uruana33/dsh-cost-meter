@@ -28,7 +28,7 @@ const useEmptySessions: UseSessions = (selector) => selector({});
 // window clear of that divider and the right edge of the same content column.
 const DEFAULT_TOP_GAP = 50;
 const DEFAULT_RIGHT_GAP = 50;
-const RECEIPT_OVERLAY_VISUAL_WIDTH = 155;
+const RECEIPT_OVERLAY_VISUAL_WIDTH = 188;
 
 interface OverlayAnchorBounds {
   right: number;

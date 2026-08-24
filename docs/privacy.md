@@ -44,7 +44,7 @@ dsh-cost-meter 代码中存在以下运行时网络请求：
 
 - DeepSeek 余额：Host 向配置的 `baseUrl` 请求 `/user/balance`，默认 `https://api.deepseek.com/user/balance`，携带 `Authorization: Bearer <API Key>`。可通过 `balanceEnabled: false` 关闭。
 - 汇率刷新：用户手动触发 USD/CNY 折算时，Host 请求 `https://api.frankfurter.app/latest?from=USD&to=CNY`，只发送普通 JSON 请求头，不发送会话、账本或凭据，8 秒超时。
-- 自更新检查：用户在本机页面点击“检查更新”后，Host 通过 npm registry 读取 `@mymeter/dsh-cost-meter` manifest，默认 registry 为 `https://registry.npmjs.org`，5 秒超时。当前公开 `latest` 为 `0.2.1`。
+- 自更新检查：用户在本机页面点击“检查更新”后，Host 通过 npm registry 读取 `@mymeter/dsh-cost-meter` manifest，默认 registry 为 `https://registry.npmjs.org`，5 秒超时。当前公开 `latest` 为 `0.2.2`。
 - 自更新安装：用户确认安装时，Host 会在 dsh profile 目录执行 `pnpm add --save-exact @mymeter/dsh-cost-meter@<version>`。实际下载来源由 pnpm/npm 配置决定。
 - 更新后健康探测：Client 在等待 dsh 重启时默认请求同源 `/`（内部 probe 支持配置其他 path），使用 `cache: "no-store"`，不发送 dsh-cost-meter 账本或凭据；`fetch` 或页面 origin 不可用时直接视为未恢复。
 - 充值入口：Client 只展示 DeepSeek 官方充值链接 `https://platform.deepseek.com/top_up`；点击后由浏览器访问。
@@ -91,7 +91,7 @@ JSON adapter 的同一进程多实例在写入前会先读取磁盘并合并事�
 
 ## 自更新权限边界
 
-`@mymeter/dsh-cost-meter@0.2.1` 已发布到 npm registry。自更新仍只在 loopback Web UI、可写 profile 且 `ctx.baseUrl` 为 `file:` URL 的环境中可用。
+`@mymeter/dsh-cost-meter@0.2.2` 已发布到 npm registry。自更新仍只在 loopback Web UI、可写 profile 且 `ctx.baseUrl` 为 `file:` URL 的环境中可用。
 
 自更新 RPC 只以 loopback authority 注册，Client 必须通过本机 dsh 连接调用；Host 的 Cordis `ctx.baseUrl` 还必须是能解析本地 profile 目录的 `file:` URL，非 `file:` URL 会被拒绝。安装前会校验目标包名必须是 `@mymeter/dsh-cost-meter`、目标版本必须是 SemVer 且高于当前版本、registry manifest 包名和版本必须匹配，并要求 manifest 具备 dsh client/bundle 字段。
 

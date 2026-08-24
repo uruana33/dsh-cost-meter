@@ -68,8 +68,8 @@ export function resolveDeepSeekModelId(model: string): DeepSeekModelId | null {
   const candidates = [normalized, normalized.includes("/") ? normalized.slice(normalized.lastIndexOf("/") + 1) : ""]
     .filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
   for (const candidate of candidates) {
-    if (Object.prototype.hasOwnProperty.call(DEEPSEEK_PRICE_TABLE, candidate)) return candidate as DeepSeekModelId;
-    if (Object.prototype.hasOwnProperty.call(DEEPSEEK_MODEL_ALIASES, candidate)) return DEEPSEEK_MODEL_ALIASES[candidate]!;
+    if (Object.hasOwn(DEEPSEEK_PRICE_TABLE, candidate)) return candidate as DeepSeekModelId;
+    if (Object.hasOwn(DEEPSEEK_MODEL_ALIASES, candidate)) return DEEPSEEK_MODEL_ALIASES[candidate]!;
   }
   return null;
 }

@@ -57,8 +57,8 @@ export function resolveXaiModelId(model: string): XaiModelId | null {
   const candidates = [normalized, normalized.includes("/") ? normalized.slice(normalized.lastIndexOf("/") + 1) : ""]
     .filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
   for (const candidate of candidates) {
-    if (Object.prototype.hasOwnProperty.call(XAI_PRICE_TABLE_USD, candidate)) return candidate as XaiModelId;
-    if (Object.prototype.hasOwnProperty.call(XAI_MODEL_ALIASES, candidate)) return XAI_MODEL_ALIASES[candidate]!;
+    if (Object.hasOwn(XAI_PRICE_TABLE_USD, candidate)) return candidate as XaiModelId;
+    if (Object.hasOwn(XAI_MODEL_ALIASES, candidate)) return XAI_MODEL_ALIASES[candidate]!;
   }
   return null;
 }

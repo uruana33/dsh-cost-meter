@@ -13,4 +13,4 @@ export { AnalyticsChart } from "./analytics-chart";
 export type { AnalyticsRange } from "./analytics-chart";
 export { UsageOverview } from "./usage-overview";
 export type { AmountView, BalanceView, BillingInsightsView, BudgetInsightView, CacheSavingsInsightView, ContextBreakdownView, MeterStatusCode, MeterTone, MyMeterSettings, MyMeterViewModel, OverlayView, PricingZoneCountdownView, CostAnalyticsAnomalyView, CostAnalyticsView, CostTrendBucketView, SessionDetailView, SessionStageView, SessionSummaryView, SessionTurnView, TokenBucketView, UsageOverviewView, CurrencyTotalView, ExchangeRateView, } from "./view-model";
-export { createAmountView, formatCurrencyMinor, formatMicroCny, formatStatusLabel, formatTokenCount } from "./format";
+export { createAmountView, formatCurrencyMinor, formatCurrencyMinorCompact, formatMicroCny, formatStatusLabel, formatTokenCount, formatTokenCountCompact, } from "./format";
