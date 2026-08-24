@@ -47,9 +47,13 @@ test.each(PERF501_SESSION_COUNTS)(
       expect(metrics.clientStoreRecomputeMs.p95).toBeLessThan(10_000);
 
       await expect(runtime.remote.listSessions()).resolves.toEqual(snapshot.sessions);
-      const firstSession = snapshot.sessions[0];
-      expect(firstSession).toBeDefined();
-      await expect(runtime.remote.getSessionDetail(firstSession!.id)).resolves.toEqual(snapshot.details[firstSession!.id]);
+      // Slim snapshot contract: the polled snapshot embeds exactly one detail,
+      // for the session it currently points at.
+      expect(Object.keys(snapshot.details)).toEqual([snapshot.currentSessionId]);
+      const currentSessionId = snapshot.currentSessionId!;
+      await expect(runtime.remote.getSessionDetail(currentSessionId)).resolves.toEqual(
+        snapshot.details[currentSessionId],
+      );
     } finally {
       runtime.uninstall();
     }
@@ -74,7 +78,8 @@ async function buildBackfilledRemoteSnapshot(sessionCount: number): Promise<{
     expect(context.sessionReadCalls).toBe(sessionCount);
     expect(context.completedReadCalls).toBe(sessionCount);
     expect(snapshot.sessions).toHaveLength(billableSessionCount);
-    expect(Object.keys(snapshot.details)).toHaveLength(billableSessionCount);
+    // The snapshot stays O(1) in history: one embedded detail, N summaries.
+    expect(Object.keys(snapshot.details)).toHaveLength(1);
 
     completed = true;
     return { runtime, snapshot };

@@ -223,7 +223,10 @@ export function createHistoryRecovery(options: HistoryRecoveryOptions): HistoryR
   };
 }
 
-export function createCordisHistoryRecoverySource(ctx: MyMeterCordisContext): HistoryRecoverySource {
+export function createCordisHistoryRecoverySource(
+  ctx: MyMeterCordisContext,
+  onSessionHeader?: (record: unknown) => void,
+): HistoryRecoverySource {
   return {
     async list(signal) {
       const services = resolveServices(ctx);
@@ -235,6 +238,7 @@ export function createCordisHistoryRecoverySource(ctx: MyMeterCordisContext): Hi
           if (typeof persistence.listSnapshots === "function") {
             const records = await persistence.listSnapshots(signal);
             return records.flatMap((record) => {
+              onSessionHeader?.(record);
               const ref = normalizeRef(record, "persistence");
               return ref ? [ref] : [];
             });
@@ -245,6 +249,7 @@ export function createCordisHistoryRecoverySource(ctx: MyMeterCordisContext): Hi
         try {
           const records = await services.query.listSessions(signal);
           return records.flatMap((record) => {
+            onSessionHeader?.(record);
             const ref = normalizeRef(record, "query");
             return ref ? [ref] : [];
           });
@@ -254,6 +259,7 @@ export function createCordisHistoryRecoverySource(ctx: MyMeterCordisContext): Hi
         const persistence = services.persistence;
         const records = await persistence.list(signal);
         return records.flatMap((record) => {
+          onSessionHeader?.(record);
           const ref = normalizeRef(record, "persistence");
           return ref ? [ref] : [];
         });
@@ -268,6 +274,9 @@ export function createCordisHistoryRecoverySource(ctx: MyMeterCordisContext): Hi
         catch { if (services.persistence) raw = await services.persistence.inspect(ref.id, signal); else throw new Error(`history read failed for ${ref.id}`); }
       } else if (services.persistence) raw = await services.persistence.inspect(ref.id, signal);
       else return null;
+      // The replay payload carries the durable storage header; harvest it even
+      // when the session is ultimately skipped or the read shape is rejected.
+      onSessionHeader?.(raw);
       return normalizeReplaySession(raw);
     },
   };

@@ -80,6 +80,8 @@ export interface MyMeterTypertRemoteAdapter extends MyMeterRemote {
 }
 export interface MyMeterTypertRemoteAdapterOptions {
     pollIntervalMs?: number;
+    /** Poll cadence while `document.visibilityState === "hidden"`. Defaults to `max(pollIntervalMs, 2000)`. */
+    hiddenPollIntervalMs?: number;
     balancePollIntervalMs?: number;
 }
 export declare const MYMETER_SERVICE_KEY = "mymeter";

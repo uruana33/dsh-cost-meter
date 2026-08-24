@@ -33,8 +33,8 @@ test("builds a session cost tree and rolls child costs into subtree summaries", 
   expect(tree.nodes["child-a"]?.childSessionIds).toEqual(["grandchild"]);
   expect(tree.nodes.root?.subtreeSummary.totalMicroCny).toBe(155);
   expect(tree.nodes["child-a"]?.subtreeSummary.totalMicroCny).toBe(35);
-  expect(tree.nodes["grandchild"]?.depth).toBe(2);
-  expect(tree.nodes["grandchild"]?.path).toEqual(["root", "child-a", "grandchild"]);
+  expect(tree.nodes.grandchild?.depth).toBe(2);
+  expect(tree.nodes.grandchild?.path).toEqual(["root", "child-a", "grandchild"]);
   expect(tree.nodes.root?.detail).toEqual({ id: "root" });
   expect(tree.anomalies).toEqual({ missingParents: [], cycles: [] });
 });

@@ -1,7 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 
 import { AnalyticsChart, type AnalyticsRange } from "./analytics-chart";
-import { formatStatusLabel, formatTokenBucketLabel, formatTokenCount } from "./format";
+import {
+  formatCurrencyMinorCompact,
+  formatStatusLabel,
+  formatTokenBucketLabel,
+  formatTokenCount,
+  formatTokenCountCompact,
+} from "./format";
 import { contextBreakdownRows, SessionStageTabs, StageMetadataPanel } from "./session-stages";
 import { buildTokenCostBreakdown } from "./token-breakdown";
 import { MyMeterUpdateControl } from "./update-ui";
@@ -13,7 +19,6 @@ import type {
   CostAnalyticsView,
   MeterStatusCode,
   SessionCostTreeNodeView,
-  SessionCostTreeView,
   SessionDetailView,
   SessionStageView,
 } from "./view-model";
@@ -127,33 +132,32 @@ export function CompactMeter({
     const outputBucket = breakdown?.output;
     const hasUnknownCost = Boolean(detail && (detail.unknownCount > 0 || detail.status === "unknown"));
 
-    const cacheTokens = cacheBucket ? formatTokenCount(cacheBucket.tokens) : "0";
+    const cacheTokens = cacheBucket ? formatTokenCountCompact(cacheBucket.tokens) : "0";
     const cacheCost = cacheBucket
-      ? formatTokenCostAmount(cacheBucket.amount.label, cacheBucket.amount.microCny, hasUnknownCost)
+      ? formatTokenCostAmount(
+          formatCurrencyMinorCompact(cacheBucket.amount.microCny, cacheBucket.amount.currency ?? "CNY"),
+          cacheBucket.amount.microCny,
+          hasUnknownCost,
+        )
       : "不可用";
 
-    const inputTokens = inputBucket ? formatTokenCount(inputBucket.tokens) : "0";
+    const inputTokens = inputBucket ? formatTokenCountCompact(inputBucket.tokens) : "0";
     const inputCost = inputBucket
-      ? formatTokenCostAmount(inputBucket.amount.label, inputBucket.amount.microCny, hasUnknownCost)
+      ? formatTokenCostAmount(
+          formatCurrencyMinorCompact(inputBucket.amount.microCny, inputBucket.amount.currency ?? "CNY"),
+          inputBucket.amount.microCny,
+          hasUnknownCost,
+        )
       : "不可用";
 
-    const outputTokens = outputBucket ? formatTokenCount(outputBucket.tokens) : "0";
+    const outputTokens = outputBucket ? formatTokenCountCompact(outputBucket.tokens) : "0";
     const outputCost = outputBucket
-      ? formatTokenCostAmount(outputBucket.amount.label, outputBucket.amount.microCny, hasUnknownCost)
+      ? formatTokenCostAmount(
+          formatCurrencyMinorCompact(outputBucket.amount.microCny, outputBucket.amount.currency ?? "CNY"),
+          outputBucket.amount.microCny,
+          hasUnknownCost,
+        )
       : "不可用";
-
-    const badgeStyle = (bg: string, border: string, color: string) => ({
-      display: "inline-flex" as const,
-      alignItems: "center" as const,
-      gap: 3,
-      padding: "1.5px 5px",
-      borderRadius: 4,
-      background: bg,
-      border: `1px solid ${border}`,
-      color,
-      fontSize: 11,
-      fontWeight: 600,
-    });
 
     return (
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", position: "relative" }}>
@@ -190,7 +194,7 @@ export function CompactMeter({
             display: "flex",
             flexDirection: "column",
             gap: 5,
-            width: 172,
+            width: 190,
             border: isBilling
               ? "1px solid var(--dsw-alias-brand-primary, #3964fe)"
               : "1px solid var(--dsw-alias-border-l1, #e5e7eb)",
@@ -211,7 +215,6 @@ export function CompactMeter({
           {/* 顶栏：标题与状态 */}
           <div
             data-testid="mymeter-today-summary"
-            aria-label="今日用量摘要"
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
@@ -223,14 +226,14 @@ export function CompactMeter({
             }}
           >
             <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              今日 {state.viewModel.usageOverview.data?.coverage === "unavailable" ? "—" : state.viewModel.usageOverview.data?.total.label ?? "同步中"}
+              今日 {state.viewModel.usageOverview.data?.coverage === "unavailable" ? "—" : state.viewModel.usageOverview.data ? formatCurrencyMinorCompact(state.viewModel.usageOverview.data.total.microCny, state.viewModel.usageOverview.data.total.currency ?? "CNY") : "同步中"}
             </span>
             <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              Token {state.viewModel.usageOverview.data ? formatTokenCount(state.viewModel.usageOverview.data.totalTokens) : "—"}
+              Token {state.viewModel.usageOverview.data ? formatTokenCountCompact(state.viewModel.usageOverview.data.totalTokens) : "—"}
             </span>
             <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {state.viewModel.balance.supported
-                ? `余额 ${state.viewModel.balance.total?.label ?? "不可用"}`
+                ? `余额 ${state.viewModel.balance.total ? formatCurrencyMinorCompact(state.viewModel.balance.total.microCny, state.viewModel.balance.total.currency ?? "CNY") : "不可用"}`
                 : state.viewModel.balance.status === "unavailable" ? "余额未接入" : "同步中"}
             </span>
           </div>
@@ -317,11 +320,21 @@ export function CompactMeter({
                 fontWeight: 600,
               }}
             >
-              <span style={{ display: "inline-flex", gap: 3 }}>
-                <span style={{ opacity: 0.85 }}>缓:</span>
-                <span>{cacheTokens}</span>
+              <span
+                style={{
+                  display: "inline-flex",
+                  gap: 3,
+                  minWidth: 0,
+                  flexShrink: 1,
+                  overflow: "hidden",
+                  whiteSpace: "nowrap",
+                }}
+                title={cacheTokens}
+              >
+                <span style={{ opacity: 0.85, flexShrink: 0 }}>缓:</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{cacheTokens}</span>
               </span>
-              <span style={{ fontWeight: 700 }}>{cacheCost}</span>
+              <span style={{ fontWeight: 700, flexShrink: 0, marginLeft: "auto" }}>{cacheCost}</span>
             </div>
 
             {/* 输入行 */}
@@ -338,11 +351,21 @@ export function CompactMeter({
                 fontWeight: 600,
               }}
             >
-              <span style={{ display: "inline-flex", gap: 3 }}>
-                <span style={{ opacity: 0.85 }}>入:</span>
-                <span>{inputTokens}</span>
+              <span
+                style={{
+                  display: "inline-flex",
+                  gap: 3,
+                  minWidth: 0,
+                  flexShrink: 1,
+                  overflow: "hidden",
+                  whiteSpace: "nowrap",
+                }}
+                title={inputTokens}
+              >
+                <span style={{ opacity: 0.85, flexShrink: 0 }}>入:</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{inputTokens}</span>
               </span>
-              <span style={{ fontWeight: 700 }}>{inputCost}</span>
+              <span style={{ fontWeight: 700, flexShrink: 0, marginLeft: "auto" }}>{inputCost}</span>
             </div>
 
             {/* 输出行 */}
@@ -359,11 +382,21 @@ export function CompactMeter({
                 fontWeight: 600,
               }}
             >
-              <span style={{ display: "inline-flex", gap: 3 }}>
-                <span style={{ opacity: 0.85 }}>出:</span>
-                <span>{outputTokens}</span>
+              <span
+                style={{
+                  display: "inline-flex",
+                  gap: 3,
+                  minWidth: 0,
+                  flexShrink: 1,
+                  overflow: "hidden",
+                  whiteSpace: "nowrap",
+                }}
+                title={outputTokens}
+              >
+                <span style={{ opacity: 0.85, flexShrink: 0 }}>出:</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{outputTokens}</span>
               </span>
-              <span style={{ fontWeight: 700 }}>{outputCost}</span>
+              <span style={{ fontWeight: 700, flexShrink: 0, marginLeft: "auto" }}>{outputCost}</span>
             </div>
           </div>
         </button>
@@ -375,7 +408,7 @@ export function CompactMeter({
             title={opensPage ? "点击打开 Token计费页面" : "Token计费小票"}
             style={{
               position: "relative",
-              width: 160,
+              width: 178,
               marginTop: -2,
               padding: "5px 8px 7px",
               background: "var(--dsw-alias-bg-layer-1, #ffffff)",
@@ -491,7 +524,16 @@ export function CompactMeter({
                         fontWeight: isActive ? 700 : 500,
                       }}
                     >
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 3,
+                          minWidth: 0,
+                          overflow: "hidden",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
                         {isActive ? (
                           <span
                             style={{
@@ -500,15 +542,18 @@ export function CompactMeter({
                               borderRadius: "50%",
                               background: "var(--dsw-alias-brand-primary, #3964fe)",
                               animation: "printHeadPulse 1s infinite ease-in-out",
+                              flexShrink: 0,
                             }}
                           />
                         ) : (
-                          <span style={{ width: 3.5, height: 3.5, borderRadius: "50%", background: "var(--dsw-alias-label-tertiary, #9ca3af)" }} />
+                          <span style={{ width: 3.5, height: 3.5, borderRadius: "50%", background: "var(--dsw-alias-label-tertiary, #9ca3af)", flexShrink: 0 }} />
                         )}
-                        <span>#{index + 1} 轮{isActive ? ` (${inProgressLabel})` : ""}</span>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>#{index + 1} 轮{isActive ? ` (${inProgressLabel})` : ""}</span>
                       </span>
-                      <span style={{ color: isActive ? "var(--dsw-alias-state-error-primary, #dc2626)" : "var(--dsw-alias-label-primary, #111827)", fontWeight: 700 }}>
-                        {isActive && currentRequest.microCny > 0 ? currentRequest.label : turn.amount.label}
+                      <span style={{ color: isActive ? "var(--dsw-alias-state-error-primary, #dc2626)" : "var(--dsw-alias-label-primary, #111827)", fontWeight: 700, flexShrink: 0, marginLeft: "auto" }}>
+                        {isActive && currentRequest.microCny > 0
+                          ? formatCurrencyMinorCompact(currentRequest.microCny, currentRequest.currency ?? "CNY")
+                          : formatCurrencyMinorCompact(turn.amount.microCny, turn.amount.currency ?? "CNY")}
                       </span>
                     </div>
                   );
@@ -537,7 +582,9 @@ export function CompactMeter({
                     />
                     <span>#1 轮 ({inProgressLabel})</span>
                   </span>
-                  <span style={{ color: "var(--dsw-alias-state-error-primary, #dc2626)", fontWeight: 700 }}>{currentRequest.label}</span>
+                  <span style={{ color: "var(--dsw-alias-state-error-primary, #dc2626)", fontWeight: 700, flexShrink: 0, marginLeft: "auto" }}>
+                    {formatCurrencyMinorCompact(currentRequest.microCny, currentRequest.currency ?? "CNY")}
+                  </span>
                 </div>
               )}
             </div>
@@ -555,8 +602,10 @@ export function CompactMeter({
                 fontVariantNumeric: "tabular-nums",
               }}
             >
-              <span style={{ fontWeight: 600 }}>合计支出</span>
-              <span style={{ fontWeight: 800, color: "var(--dsw-alias-label-primary, #111827)" }}>{sessionTotal.label}</span>
+              <span style={{ fontWeight: 600, flexShrink: 0 }}>合计支出</span>
+              <span style={{ fontWeight: 800, color: "var(--dsw-alias-label-primary, #111827)", flexShrink: 0, marginLeft: "auto" }}>
+                {formatCurrencyMinorCompact(sessionTotal.microCny, sessionTotal.currency ?? "CNY")}
+              </span>
             </div>
           </div>
         ) : null}
@@ -1015,6 +1064,7 @@ function CostAnalyticsReportView({
       {overview ? <UsageOverview overview={overview} /> : null}
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
         <strong style={{ fontSize: 11, color: DSH_COLORS.primary }}>费用趋势</strong>
+        {/* biome-ignore lint/a11y/useSemanticElements: a fieldset would alter the compact toolbar layout; role="group" keeps the range switcher labelled. */}
         <div role="group" aria-label="趋势范围" style={{ display: "inline-flex", padding: 2, border: `1px solid ${DSH_COLORS.border1}`, borderRadius: 6, background: DSH_COLORS.layer1 }}>
           {rangeOptions.map(([value, label]) => {
             const selected = range === value;
@@ -1146,7 +1196,9 @@ export function SessionDetailPanel({ store, showNavigation = true }: { store: My
             {detail.title}
           </strong>
         ) : null}
+        {/* biome-ignore lint/a11y/useSemanticElements: tests and screen readers address this row as a labelled group; a fieldset would change header layout. */}
         <div
+          role="group"
           aria-label="会话ID"
           style={{
             display: "flex",

@@ -9,6 +9,13 @@ export interface BuildSessionCostTreeOptions<Detail = unknown> {
     readonly aggregation: LedgerAggregation;
     readonly events: readonly SessionCostTreeEvent[];
     readonly details?: Readonly<Record<string, Detail>> | undefined;
+    /**
+     * Parent links observed from durable session headers (dsh stamps
+     * `parentSession` + `origin: "subagent"` outside the event log). Used when
+     * an event stream itself carries no `parentSessionId`, so the tree still
+     * nests even if per-request metadata was lost before headers were seen.
+     */
+    readonly observedParents?: Readonly<Record<string, string>> | undefined;
 }
 export interface MissingParentSession {
     readonly sessionId: string;
@@ -36,4 +43,4 @@ export interface SessionCostTree<Detail = unknown> {
         readonly cycles: readonly (readonly string[])[];
     };
 }
-export declare function buildSessionCostTree<Detail = unknown>({ aggregation, events, details, }: BuildSessionCostTreeOptions<Detail>): SessionCostTree<Detail>;
+export declare function buildSessionCostTree<Detail = unknown>({ aggregation, events, details, observedParents, }: BuildSessionCostTreeOptions<Detail>): SessionCostTree<Detail>;

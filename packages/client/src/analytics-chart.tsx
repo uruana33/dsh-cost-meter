@@ -150,6 +150,7 @@ export function AnalyticsChart({
             <g key={bucket.key}>
               <title>{`${bucketTooltipLabel(range, bucket.key)} · ${bucketAmount(bucket)} · ${bucket.requestCount} 次`}</title>
               {modelSegments.length === 0 ? (
+                // biome-ignore lint/a11y/noInteractiveElementToNoninteractiveRole: SVG bar acts as an image with label; focus already selects the bucket for keyboard users.
                 <rect
                   x={x}
                   y={y}
@@ -188,6 +189,7 @@ export function AnalyticsChart({
                     segmentBottom -= segmentHeight;
                     const modelName = modelLabel(model);
                     return (
+                      // biome-ignore lint/a11y/noStaticElementInteractions: mouse-only hit area; keyboard users focus the labelled segment via tabIndex above.
                       <rect
                         key={modelKey(model)}
                         x={x}
@@ -220,14 +222,14 @@ export function AnalyticsChart({
       </svg>
       </div>
       {modelLegend.length > 1 ? (
-        <div role="list" aria-label="模型图例" style={{ display: "flex", flexWrap: "wrap", gap: "4px 10px", color: DSH_COLORS.secondary, fontSize: 10 }}>
+        <ul aria-label="模型图例" style={{ display: "flex", flexWrap: "wrap", gap: "4px 10px", margin: 0, padding: 0, listStyle: "none", color: DSH_COLORS.secondary, fontSize: 10 }}>
           {modelLegend.map((model) => (
-            <span key={modelKey(model)} role="listitem" style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+            <li key={modelKey(model)} style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}>
               <span aria-hidden="true" style={{ width: 8, height: 8, flex: "0 0 auto", borderRadius: 2, background: modelColors.get(modelKey(model)) }} />
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{modelLabel(model)}</span>
-            </span>
+            </li>
           ))}
-        </div>
+        </ul>
       ) : null}
       {selectedKey ? (
         <p style={{ margin: 0, color: DSH_COLORS.secondary, fontSize: 10, fontVariantNumeric: "tabular-nums" }}>

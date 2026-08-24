@@ -43,9 +43,6 @@ import {
   XAI_PRICE_VERSION,
   XAI_PRICING_SOURCE,
   XAI_PROVIDER,
-  XAI_EXCHANGE_RATE_LABEL,
-  USD_CNY_EXCHANGE_RATE_LABEL,
-  PRICING_CATALOG_VERSIONS,
 } from "./pricing/index";
 import type { DeepSeekModelId, PricingCatalogKind, XaiModelId } from "./pricing/index";
 export {

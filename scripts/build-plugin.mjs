@@ -36,6 +36,10 @@ await Promise.all([
     platform: "browser",
     target: ["es2022"],
     sourcemap: false,
+    // The client bundle loads in the dsh Web profile on every page view;
+    // minify keeps the browser payload small. The ModuleLoader banner/footer
+    // are emitted verbatim around the minified module body.
+    minify: true,
     external: ["react", "react/jsx-runtime"],
     define: {
       "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "production"),

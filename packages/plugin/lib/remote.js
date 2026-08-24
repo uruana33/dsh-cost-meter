@@ -123,12 +123,16 @@ async function createMyMeterRemoteFromTypert(namespace, options = {}) {
   let refreshingBalance = false;
   let initialBalanceRequested = false;
   const pollIntervalMs = options.pollIntervalMs ?? 200;
+  const hiddenPollIntervalMs = options.hiddenPollIntervalMs ?? Math.max(pollIntervalMs, 2e3);
   const balancePollIntervalMs = options.balancePollIntervalMs ?? 5 * 6e4;
   async function refresh() {
     if (disposed || refreshing) return;
     refreshing = true;
+    let unchanged = false;
     try {
-      snapshot = await readSnapshot(namespace, false);
+      const next = await readSnapshot(namespace, false);
+      unchanged = next.snapshotVersion !== void 0 && snapshot.snapshotVersion !== void 0 && next.snapshotVersion === snapshot.snapshotVersion && snapshot.connection.status === "connected";
+      snapshot = next;
     } catch (error) {
       snapshot = {
         ...snapshot,
@@ -141,7 +145,9 @@ async function createMyMeterRemoteFromTypert(namespace, options = {}) {
       refreshing = false;
     }
     if (disposed) return;
-    for (const listener of listeners) listener(snapshot);
+    if (!unchanged) {
+      for (const listener of listeners) listener(snapshot);
+    }
     if (!initialBalanceRequested) {
       initialBalanceRequested = true;
       void updateBalance().then((balance) => {
@@ -169,10 +175,16 @@ async function createMyMeterRemoteFromTypert(namespace, options = {}) {
       refreshingBalance = false;
     }
   }
-  const interval = pollIntervalMs > 0 ? setInterval(() => {
-    void refresh();
-  }, pollIntervalMs) : null;
-  if (interval?.unref) interval.unref();
+  let pollTimer = null;
+  const startPollInterval = (delayMs) => {
+    if (pollTimer !== null) clearInterval(pollTimer);
+    pollTimer = delayMs > 0 ? setInterval(() => {
+      void refresh();
+    }, delayMs) : null;
+    if (pollTimer?.unref) pollTimer.unref();
+  };
+  const pollingEnabled = pollIntervalMs > 0;
+  startPollInterval(pollIntervalMs);
   const balanceInterval = balancePollIntervalMs > 0 ? setInterval(() => {
     void updateBalance().then((balance) => {
       if (!balance || disposed) return;
@@ -181,11 +193,16 @@ async function createMyMeterRemoteFromTypert(namespace, options = {}) {
   }, balancePollIntervalMs) : null;
   if (balanceInterval?.unref) balanceInterval.unref();
   const handleVisibilityChange = () => {
-    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+    if (typeof document === "undefined") return;
+    if (document.visibilityState === "visible") {
+      if (pollingEnabled && !disposed) startPollInterval(pollIntervalMs);
+      void refresh();
       void updateBalance().then((balance) => {
         if (!balance || disposed) return;
         for (const listener of listeners) listener(snapshot);
       });
+    } else if (pollingEnabled && !disposed) {
+      startPollInterval(hiddenPollIntervalMs);
     }
   };
   if (typeof document !== "undefined") {
@@ -194,7 +211,8 @@ async function createMyMeterRemoteFromTypert(namespace, options = {}) {
   function dispose() {
     if (disposed) return;
     disposed = true;
-    if (interval) clearInterval(interval);
+    if (pollTimer !== null) clearInterval(pollTimer);
+    pollTimer = null;
     if (balanceInterval) clearInterval(balanceInterval);
     if (typeof document !== "undefined") {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
@@ -214,6 +232,11 @@ async function createMyMeterRemoteFromTypert(namespace, options = {}) {
       };
     },
     refresh,
+    async getSessionDetail(sessionId) {
+      const result = await namespace.getSessionDetail(sessionId);
+      if (!result.ok) throw new Error(`mymeter: getSessionDetail failed: ${result.error.message}`);
+      return sessionDetailOrNullSchema.parse(result.value);
+    },
     async refreshBalance() {
       const balance = await updateBalance(true);
       if (!balance) return snapshot.balance;
@@ -320,7 +343,8 @@ function parseSnapshot(value) {
     sessions,
     details,
     ...record.exchangeRate === void 0 ? {} : { exchangeRate: parseExchangeRate(record.exchangeRate) },
-    ...record.ledgerGeneration === void 0 ? {} : { ledgerGeneration: nonNegativeInteger(record.ledgerGeneration, "ledgerGeneration") }
+    ...record.ledgerGeneration === void 0 ? {} : { ledgerGeneration: nonNegativeInteger(record.ledgerGeneration, "ledgerGeneration") },
+    ...record.snapshotVersion === void 0 ? {} : { snapshotVersion: nonNegativeInteger(record.snapshotVersion, "snapshotVersion") }
   };
 }
 function parseSessionCostTree(value) {

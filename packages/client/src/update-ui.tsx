@@ -26,7 +26,6 @@ export function MyMeterUpdateControl({ controller, isLoopback }: MyMeterUpdateCo
 
   return (
     <div
-      aria-label="MyMeter 更新"
       style={{
         display: "flex",
         alignItems: "center",

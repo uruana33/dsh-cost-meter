@@ -93,6 +93,8 @@ export interface MyMeterTypertRemoteAdapter extends MyMeterRemote {
 
 export interface MyMeterTypertRemoteAdapterOptions {
   pollIntervalMs?: number;
+  /** Poll cadence while `document.visibilityState === "hidden"`. Defaults to `max(pollIntervalMs, 2000)`. */
+  hiddenPollIntervalMs?: number;
   balancePollIntervalMs?: number;
 }
 
@@ -233,13 +235,24 @@ export async function createMyMeterRemoteFromTypert(
   // DeepSeek usage lands only at stream completion. Poll frequently enough
   // to expose the output-delta estimates before final settlement replaces them.
   const pollIntervalMs = options.pollIntervalMs ?? 200;
+  // Background tabs cannot see the meter; slow the poll down to keep idle
+  // CPU/RPC cost near zero without freezing balance or connection recovery.
+  const hiddenPollIntervalMs = options.hiddenPollIntervalMs ?? Math.max(pollIntervalMs, 2_000);
   const balancePollIntervalMs = options.balancePollIntervalMs ?? 5 * 60_000;
 
   async function refresh(): Promise<void> {
     if (disposed || refreshing) return;
     refreshing = true;
+    let unchanged = false;
     try {
-      snapshot = await readSnapshot(namespace, false);
+      const next = await readSnapshot(namespace, false);
+      // The host bumps `snapshotVersion` only when content actually changed,
+      // so equal versions mean this poll is a no-op for subscribers.
+      unchanged = next.snapshotVersion !== undefined
+        && snapshot.snapshotVersion !== undefined
+        && next.snapshotVersion === snapshot.snapshotVersion
+        && snapshot.connection.status === "connected";
+      snapshot = next;
     } catch (error) {
       snapshot = {
         ...snapshot,
@@ -252,7 +265,9 @@ export async function createMyMeterRemoteFromTypert(
       refreshing = false;
     }
     if (disposed) return;
-    for (const listener of listeners) listener(snapshot);
+    if (!unchanged) {
+      for (const listener of listeners) listener(snapshot);
+    }
     if (!initialBalanceRequested) {
       initialBalanceRequested = true;
       void updateBalance().then((balance) => {
@@ -284,13 +299,18 @@ export async function createMyMeterRemoteFromTypert(
     }
   }
 
-  const interval = pollIntervalMs > 0
-    ? setInterval(() => {
-      void refresh();
-    }, pollIntervalMs)
-    : null;
-
-  if (interval?.unref) interval.unref();
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  const startPollInterval = (delayMs: number): void => {
+    if (pollTimer !== null) clearInterval(pollTimer);
+    pollTimer = delayMs > 0
+      ? setInterval(() => {
+        void refresh();
+      }, delayMs)
+      : null;
+    if (pollTimer?.unref) pollTimer.unref();
+  };
+  const pollingEnabled = pollIntervalMs > 0;
+  startPollInterval(pollIntervalMs);
 
   const balanceInterval = balancePollIntervalMs > 0
     ? setInterval(() => {
@@ -303,11 +323,18 @@ export async function createMyMeterRemoteFromTypert(
   if (balanceInterval?.unref) balanceInterval.unref();
 
   const handleVisibilityChange = (): void => {
-    if (typeof document !== "undefined" && document.visibilityState === "visible") {
+    if (typeof document === "undefined") return;
+    if (document.visibilityState === "visible") {
+      // Catch up immediately after a hidden slow-poll period, then resume the
+      // fast cadence for live output-delta estimates.
+      if (pollingEnabled && !disposed) startPollInterval(pollIntervalMs);
+      void refresh();
       void updateBalance().then((balance) => {
         if (!balance || disposed) return;
         for (const listener of listeners) listener(snapshot);
       });
+    } else if (pollingEnabled && !disposed) {
+      startPollInterval(hiddenPollIntervalMs);
     }
   };
   if (typeof document !== "undefined") {
@@ -316,7 +343,8 @@ export async function createMyMeterRemoteFromTypert(
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    if (interval) clearInterval(interval);
+    if (pollTimer !== null) clearInterval(pollTimer);
+    pollTimer = null;
     if (balanceInterval) clearInterval(balanceInterval);
     if (typeof document !== "undefined") {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
@@ -336,6 +364,11 @@ export async function createMyMeterRemoteFromTypert(
       };
     },
     refresh,
+    async getSessionDetail(sessionId: string) {
+      const result = await namespace.getSessionDetail(sessionId);
+      if (!result.ok) throw new Error(`mymeter: getSessionDetail failed: ${result.error.message}`);
+      return sessionDetailOrNullSchema.parse(result.value);
+    },
     async refreshBalance() {
       const balance = await updateBalance(true);
       if (!balance) return snapshot.balance;
@@ -461,6 +494,9 @@ function parseSnapshot(value: unknown): MyMeterRemoteSnapshot {
     ...(record.ledgerGeneration === undefined
       ? {}
       : { ledgerGeneration: nonNegativeInteger(record.ledgerGeneration, "ledgerGeneration") }),
+    ...(record.snapshotVersion === undefined
+      ? {}
+      : { snapshotVersion: nonNegativeInteger(record.snapshotVersion, "snapshotVersion") }),
   };
 }
 

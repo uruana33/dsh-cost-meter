@@ -303,10 +303,19 @@ export interface MyMeterRemoteSnapshot {
     details: Record<string, RemoteSessionDetail>;
     exchangeRate?: RemoteExchangeRateSnapshot;
     ledgerGeneration?: number;
+    /**
+     * Monotonic counter bumped by the host whenever snapshot content actually
+     * changes. Remote adapters compare it between polls to skip redundant
+     * listener notifications; `undefined` means the host predates the field,
+     * so adapters must keep notifying on every poll.
+     */
+    snapshotVersion?: number;
 }
 export interface MyMeterRemote {
     getSnapshot(): MyMeterRemoteSnapshot;
     subscribe(listener: (snapshot: MyMeterRemoteSnapshot) => void): () => void;
+    /** On-demand full detail for one session; the polled snapshot embeds only the current session's. */
+    getSessionDetail?(sessionId: string): Promise<RemoteSessionDetail | null>;
     refreshExchangeRate?(): Promise<RemoteExchangeRateSnapshot | void>;
     refreshBalance?(): Promise<RemoteBalanceSnapshot | void>;
     getSessionCostTree?(): Promise<RemoteSessionCostTree>;
@@ -397,7 +406,7 @@ export declare function snapOverlayPosition(position: {
     width: number;
     height: number;
 }, snapThreshold?: number): SnappedOverlayPosition;
-export declare function buildViewModel(snapshot: MyMeterRemoteSnapshot, settings: MyMeterSettings, ui: MyMeterStoreUiState, asyncState?: MyMeterAsyncState): MyMeterViewModel;
+export declare function buildViewModel(snapshot: MyMeterRemoteSnapshot, settings: MyMeterSettings, ui: MyMeterStoreUiState, asyncState?: MyMeterAsyncState, fetchedDetails?: ReadonlyMap<string, RemoteSessionDetail>): MyMeterViewModel;
 export declare function createMyMeterStore(options?: {
     remote?: MyMeterRemote;
     storage?: StorageLike | null;

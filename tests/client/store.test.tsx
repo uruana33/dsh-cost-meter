@@ -6,11 +6,51 @@ import {
   MyMeterConversationView,
   ShellOverlay,
   createMockRemote,
+  createMockRemoteFixtures,
   createMyMeterStore,
+  formatCurrencyMinorCompact,
   formatMicroCny,
+  formatTokenCountCompact,
   resolvePrimaryStatus,
+  type MyMeterRemote,
+  type MyMeterRemoteSnapshot,
   type StorageLike,
 } from "../../packages/client/src";
+
+class SlimDetailRemote implements MyMeterRemote {
+  private snapshot: MyMeterRemoteSnapshot;
+  private readonly listeners = new Set<(snapshot: MyMeterRemoteSnapshot) => void>();
+
+  detailReads = 0;
+
+  constructor(
+    snapshot: MyMeterRemoteSnapshot,
+    private readonly allDetails: MyMeterRemoteSnapshot["details"],
+  ) {
+    this.snapshot = snapshot;
+  }
+
+  getSnapshot(): MyMeterRemoteSnapshot {
+    return this.snapshot;
+  }
+
+  subscribe(listener: (snapshot: MyMeterRemoteSnapshot) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  async getSessionDetail(sessionId: string): Promise<MyMeterRemoteSnapshot["details"][string] | null> {
+    this.detailReads += 1;
+    return this.allDetails[sessionId] ?? null;
+  }
+
+  publish(snapshot: MyMeterRemoteSnapshot): void {
+    this.snapshot = snapshot;
+    for (const listener of this.listeners) listener(snapshot);
+  }
+}
 
 class MemoryStorage implements StorageLike {
   private readonly values = new Map<string, string>();
@@ -774,7 +814,7 @@ describe("MyMeter store and mock remote", () => {
   test("does not let the host render loop overwrite an explicit meter selection", () => {
     const remote = createMockRemote("billing");
     const store = createMyMeterStore({ remote, storage, storageKey: "mymeter.settings" });
-    let currentSessionId = "sess-1";
+    const currentSessionId = "sess-1";
     const useSessions = <T,>(selector: (state: { current: string }) => T): T =>
       selector({ current: currentSessionId });
     const { rerender } = render(<ShellOverlay store={store} useSessions={useSessions} />);
@@ -787,6 +827,53 @@ describe("MyMeter store and mock remote", () => {
     expect(store.getState().viewModel.scope.sessionId).toBe("sess-2");
     store.destroy();
   });
+
+  test("slim snapshots resolve non-current session details on demand and cache them per ledger generation", async () => {
+    const fixtures = createMockRemoteFixtures();
+    const billing = fixtures.billing;
+    const allDetails = billing.details;
+    const slimSnapshot: MyMeterRemoteSnapshot = {
+      ...billing,
+      currentSessionId: "sess-1",
+      details: { "sess-1": allDetails["sess-1"]! },
+    };
+    const remote = new SlimDetailRemote(slimSnapshot, allDetails);
+    const store = createMyMeterStore({ remote, storage: null });
+
+    // The embedded detail of the current session must not trigger an RPC.
+    expect(store.getState().viewModel.detail?.id).toBe("sess-1");
+    expect(remote.detailReads).toBe(0);
+
+    await act(async () => {
+      store.selectSession("sess-2");
+    });
+    expect(remote.detailReads).toBe(1);
+    expect(store.getState().viewModel.detail?.id).toBe("sess-2");
+
+    act(() => {
+      store.selectSession("sess-1");
+    });
+    // Back to the snapshot-embedded current session: no extra RPC.
+    expect(remote.detailReads).toBe(1);
+    expect(store.getState().viewModel.detail?.id).toBe("sess-1");
+
+    await act(async () => {
+      store.selectSession("sess-2");
+    });
+    // Cached for the same ledger generation: still one RPC.
+    expect(remote.detailReads).toBe(1);
+
+    remote.publish({
+      ...slimSnapshot,
+      ledgerGeneration: (slimSnapshot.ledgerGeneration ?? 0) + 1,
+      snapshotVersion: (slimSnapshot.snapshotVersion ?? 0) + 1,
+    });
+    await act(async () => {});
+    // A new ledger generation invalidates the cache and refetches.
+    expect(remote.detailReads).toBe(2);
+    expect(store.getState().viewModel.detail?.id).toBe("sess-2");
+    store.destroy();
+  });
 });
 
 describe("formatting", () => {
@@ -794,6 +881,17 @@ describe("formatting", () => {
     expect(formatMicroCny(1234)).toBe("¥0.001");
     expect(formatMicroCny(9876543)).toBe("¥9.877");
     expect(formatMicroCny(321)).toBe("<¥0.001");
+  });
+
+  test("compact formatters keep very large values narrow", () => {
+    expect(formatTokenCountCompact(99_999)).toBe("99,999");
+    expect(formatTokenCountCompact(100_000)).toBe("10万");
+    expect(formatTokenCountCompact(123_456)).toBe("12.3万");
+    expect(formatTokenCountCompact(12_345_678)).toBe("1234.6万");
+    expect(formatTokenCountCompact(123_456_789)).toBe("1.23亿");
+    expect(formatCurrencyMinorCompact(500)).toBe("¥0.001");
+    expect(formatCurrencyMinorCompact(4_000_000)).toBe("¥4.00");
+    expect(formatCurrencyMinorCompact(400_000_000)).toBe("¥400");
   });
 });
 

@@ -58,14 +58,14 @@ export interface MyMeterHostRuntimeOptions {
     exchangeRate?: ExchangeRateProvider | undefined;
     afterLedgerCommit?: (() => void) | undefined;
     onAfterLedgerCommitError?: ((error: unknown) => void) | undefined;
+    /** Durable session-header parent links (sessionId -> parentSessionId). */
+    observedSessionParents?: () => Readonly<Record<string, string>> | undefined;
 }
-export interface ExchangeRateProvider {
-    (): Promise<{
-        rate: number;
-        fetchedAt?: string | undefined;
-        source?: string | undefined;
-    }>;
-}
+export type ExchangeRateProvider = () => Promise<{
+    rate: number;
+    fetchedAt?: string | undefined;
+    source?: string | undefined;
+}>;
 export interface MyMeterClientPluginOptions {
     slots: MyMeterSlotContext;
     remote: MyMeterRemote;
@@ -95,7 +95,7 @@ export interface MyMeterHostRuntime {
 export interface MyMeterClientPlugin {
     uninstall(): void;
 }
-export declare function createMyMeterHostRuntime({ dsh, balance, providers, contextBreakdown, repository: configuredRepository, exchangeRate: configuredExchangeRate, now: configuredNow, afterLedgerCommit, onAfterLedgerCommitError, }: MyMeterHostRuntimeOptions): MyMeterHostRuntime;
+export declare function createMyMeterHostRuntime({ dsh, balance, providers, contextBreakdown, repository: configuredRepository, exchangeRate: configuredExchangeRate, now: configuredNow, afterLedgerCommit, onAfterLedgerCommitError, observedSessionParents, }: MyMeterHostRuntimeOptions): MyMeterHostRuntime;
 export declare function createMyMeterClientPlugin({ slots, remote, storage, storageKey, }: MyMeterClientPluginOptions): MyMeterClientPlugin;
 export { apply, apply as applyCordisHost, createMyMeterCordisHostRuntime, inject, name, } from "./cordis-host";
 export type { MyMeterCordisHostConfig, MyMeterCordisHostOptions, MyMeterTypertHostContext } from "./cordis-host";

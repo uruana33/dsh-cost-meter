@@ -13,16 +13,18 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
+    "lint": "biome lint packages tests scripts",
     "build:plugin": "node scripts/build-plugin.mjs",
     "build": "npm run typecheck && npm run build:plugin",
     "verify:package": "node scripts/verify-package.mjs",
-    "verify": "npm test && npm run build && npm run pack:plugin && npm run verify:package",
+    "verify": "npm test && npm run lint && npm run build && npm run pack:plugin && npm run verify:package",
     "pack:plugin": "npm pack --workspace @mymeter/dsh-cost-meter"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.10",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
     "@types/node": "^22.15.0",

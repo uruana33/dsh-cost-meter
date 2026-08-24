@@ -985,8 +985,8 @@ describe("overlay visual contract", () => {
     store.setOverlayCollapsed(true);
     act(() => store.setOverlayPosition({ x: 999, y: 999 }));
 
-    expect(store.getState().settings.overlayPosition).toEqual({ x: 165, y: 200 });
-    expect(store.getState().viewModel.overlay.position).toEqual({ x: 165, y: 200 });
+    expect(store.getState().settings.overlayPosition).toEqual({ x: 132, y: 200 });
+    expect(store.getState().viewModel.overlay.position).toEqual({ x: 132, y: 200 });
 
     store.destroy();
   });
@@ -1037,7 +1037,7 @@ describe("overlay visual contract", () => {
     render(<ShellOverlay store={store} />);
 
     expect(screen.getByTestId("mymeter-shell")).toHaveStyle({
-      left: "995px",
+      left: "962px",
       top: "126px",
     });
 
@@ -1047,7 +1047,7 @@ describe("overlay visual contract", () => {
     });
 
     expect(screen.getByTestId("mymeter-shell")).toHaveStyle({
-      left: "635px",
+      left: "602px",
       top: "126px",
     });
 
@@ -1090,7 +1090,7 @@ describe("overlay visual contract", () => {
     render(<ShellOverlay store={store} />);
 
     expect(screen.getByTestId("mymeter-shell")).toHaveStyle({
-      left: "995px",
+      left: "962px",
       top: "126px",
     });
 
@@ -1100,7 +1100,7 @@ describe("overlay visual contract", () => {
     });
 
     expect(screen.getByTestId("mymeter-shell")).toHaveStyle({
-      left: "635px",
+      left: "602px",
       top: "126px",
     });
 
@@ -1142,7 +1142,7 @@ describe("overlay visual contract", () => {
     render(<ShellOverlay store={store} />);
 
     expect(screen.getByTestId("mymeter-shell")).toHaveStyle({
-      left: "995px",
+      left: "962px",
       top: "126px",
     });
 
@@ -1154,7 +1154,7 @@ describe("overlay visual contract", () => {
     });
 
     const draggedPosition = store.getState().settings.overlayPosition;
-    expect(draggedPosition).toEqual({ x: 1195, y: 266 });
+    expect(draggedPosition).toEqual({ x: 1162, y: 266 });
 
     act(() => {
       scrollRight = 840;
@@ -1164,7 +1164,7 @@ describe("overlay visual contract", () => {
 
     expect(store.getState().settings.overlayPosition).toEqual(draggedPosition);
     expect(screen.getByTestId("mymeter-shell")).toHaveStyle({
-      left: "1195px",
+      left: "1162px",
       top: "266px",
     });
 
@@ -1176,7 +1176,7 @@ describe("overlay visual contract", () => {
     });
 
     expect(screen.getByTestId("mymeter-shell")).toHaveStyle({
-      left: "1195px",
+      left: "1162px",
       top: "266px",
     });
 
@@ -1201,7 +1201,7 @@ describe("overlay visual contract", () => {
     const shell = screen.getByTestId("mymeter-shell");
     expect(shell).toHaveStyle({
       position: "fixed",
-      left: "165px",
+      left: "132px",
       top: "200px",
       maxWidth: "calc(100vw - 16px)",
       overflow: "visible",
@@ -1332,7 +1332,7 @@ describe("overlay visual contract", () => {
     expect(
       snapOverlayPosition({ x: 999, y: 12 }, { width: 600, height: 480 }),
     ).toEqual({
-      position: { x: 445, y: 12 },
+      position: { x: 412, y: 12 },
       dockedEdge: "right",
     });
 
@@ -1377,7 +1377,7 @@ describe("overlay visual contract", () => {
       window.dispatchEvent(new MouseEvent("pointerup", { clientX: 150, clientY: 120 }));
     });
 
-    expect(store.getState().settings.overlayPosition).toEqual({ x: 165, y: 200 });
+    expect(store.getState().settings.overlayPosition).toEqual({ x: 132, y: 200 });
     expect(store.getState().settings.overlayCollapsed).toBe(true);
 
     store.destroy();
@@ -1409,6 +1409,38 @@ describe("overlay visual contract", () => {
     expect(screen.getByText("¥0.028")).toBeTruthy();
     expect(screen.getByText("出:")).toBeTruthy();
     expect(screen.getByText("12,530")).toBeTruthy();
+
+    store.destroy();
+  });
+
+  test("compacts large token counts and shields fixed-width meter rows from overflow", () => {
+    const remote = createMockRemote("billing");
+    const snapshot = remote.getSnapshot();
+    const detail = snapshot.details["sess-1"]!;
+    const bucketByLabel = (label: string) => detail.tokenBuckets.find((bucket) => bucket.label === label)!;
+    bucketByLabel("缓存命中").tokens = 12_345_678;
+    bucketByLabel("缓存未命中").tokens = 987_654;
+    bucketByLabel("输出").tokens = 456_789;
+    remote.setSnapshot(snapshot);
+    const store = createMyMeterStore({
+      remote,
+      storage: new MemoryStorage(),
+    });
+    store.setOverlayCollapsed(true);
+
+    render(<ShellOverlay store={store} />);
+
+    // Multi-million token buckets switch to 万-scale instead of grouped digits.
+    expect(screen.getByText("1234.6万")).toBeTruthy();
+    expect(screen.getByText("98.8万")).toBeTruthy();
+    expect(screen.getByText("45.7万")).toBeTruthy();
+
+    // The token side may truncate gracefully; the amount side never shrinks.
+    const cacheLabel = screen.getByText("缓:");
+    const cacheRow = cacheLabel.closest("span")?.parentElement;
+    expect(cacheRow?.getAttribute("style")).toContain("min-width");
+    const amountSpan = screen.getByText("¥0.003");
+    expect(amountSpan.getAttribute("style")).toContain("flex-shrink");
 
     store.destroy();
   });

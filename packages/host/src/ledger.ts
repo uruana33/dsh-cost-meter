@@ -7,6 +7,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -136,14 +137,30 @@ export function createFileCostEventRepository({
   const initial = readLedgerFile(filePath, onRecovery);
   const repository = createInMemoryCostEventRepository(initial.events);
   let ledgerFingerprint = initial.fingerprint;
+  // Every mutating call persists synchronously, so after each completed call
+  // the on-memory events equal the durable file contents. Re-reading the file
+  // (O(file size) read + JSON.parse) is therefore only necessary when another
+  // writer touched it since this repository last read or wrote it.
+  let lastSyncedDiskStat = statLedgerFile(filePath);
+  let lastSeenWriteGeneration = pathWriteGeneration(filePath);
 
-  const mergeFromDisk = (events: readonly CostEventInput[]): readonly CostEventRecord[] => {
+  const syncFromDisk = (): void => {
+    const stat = statLedgerFile(filePath);
+    const generation = pathWriteGeneration(filePath);
+    if (
+      stat !== null
+      && lastSyncedDiskStat !== null
+      && stat.mtimeMs === lastSyncedDiskStat.mtimeMs
+      && stat.size === lastSyncedDiskStat.size
+      && generation === lastSeenWriteGeneration
+    ) {
+      return;
+    }
     const disk = readLedgerFile(filePath, onRecovery);
     ledgerFingerprint = disk.fingerprint;
-    return createInMemoryCostEventRepository([
-      ...disk.events,
-      ...events,
-    ]).list();
+    repository.replaceAll(disk.events);
+    lastSyncedDiskStat = statLedgerFile(filePath);
+    lastSeenWriteGeneration = pathWriteGeneration(filePath);
   };
 
   const persist = () => {
@@ -151,21 +168,26 @@ export function createFileCostEventRepository({
       schemaVersion: LEDGER_SCHEMA_VERSION,
       events: repository.list(),
     };
-    const contents = JSON.stringify(payload, null, 2);
+    const contents = JSON.stringify(payload);
     mkdirSync(dirname(filePath), { recursive: true });
     writeLedgerFileAtomically(filePath, contents);
     ledgerFingerprint = createLedgerFingerprintFromContents(filePath, contents);
+    lastSyncedDiskStat = statLedgerFile(filePath);
+    lastSeenWriteGeneration = pathWriteGeneration(filePath);
   };
 
   return {
     upsert(event) {
-      repository.replaceAll(mergeFromDisk(repository.list()));
+      syncFromDisk();
       const result = repository.upsert(event);
       persist();
       return result;
     },
     commit(events) {
-      repository.replaceAll(mergeFromDisk([...repository.list(), ...events]));
+      syncFromDisk();
+      for (const event of events) {
+        repository.upsert(event);
+      }
       persist();
     },
     list() {
@@ -175,7 +197,12 @@ export function createFileCostEventRepository({
       return repository.getById(id);
     },
     replaceAll(events) {
-      repository.replaceAll(mergeFromDisk(events));
+      syncFromDisk();
+      // Matches the historical merge semantics: disk events are the base and
+      // the incoming batch is upserted on top of them.
+      for (const event of events) {
+        repository.upsert(event);
+      }
       persist();
     },
     clear() {
@@ -186,6 +213,35 @@ export function createFileCostEventRepository({
       return ledgerFingerprint;
     },
   };
+}
+
+interface LedgerDiskStat {
+  mtimeMs: number;
+  size: number;
+}
+
+function statLedgerFile(filePath: string): LedgerDiskStat | null {
+  try {
+    const stat = statSync(filePath);
+    return { mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch {
+    return null;
+  }
+}
+
+// Process-wide monotonic counter per normalized ledger path. Sibling
+// repository instances for the same path bump it on every persist, which lets
+// syncFromDisk() trust the stat fast path even when a same-tick write keeps
+// mtime and size identical.
+const ledgerWriteGenerations = new Map<string, number>();
+
+function pathWriteGeneration(filePath: string): number {
+  return ledgerWriteGenerations.get(`${process.pid}:${filePath}`) ?? 0;
+}
+
+function bumpPathWriteGeneration(filePath: string): void {
+  const key = `${process.pid}:${filePath}`;
+  ledgerWriteGenerations.set(key, (ledgerWriteGenerations.get(key) ?? 0) + 1);
 }
 
 export { createHostCostEventKey };
@@ -271,7 +327,7 @@ function readLedgerFile(
 
   if (rejectedEventCount > 0) {
     const quarantinePath = quarantineLedgerFile(filePath, "invalid-events");
-    contents = JSON.stringify({ schemaVersion: LEDGER_SCHEMA_VERSION, events: restored }, null, 2);
+    contents = JSON.stringify({ schemaVersion: LEDGER_SCHEMA_VERSION, events: restored });
     writeLedgerFileAtomically(filePath, contents);
     onRecovery?.({
       filePath,
@@ -337,7 +393,11 @@ export function restoreLedgerEvent(event: unknown): CostEventRecord {
     turnId: typeof record.turnId === "string" ? record.turnId : undefined,
     stepId: typeof record.stepId === "string" ? record.stepId : undefined,
     attemptId: typeof record.attemptId === "string" ? record.attemptId : undefined,
-    parentSessionId: typeof record.parentSessionId === "string" ? record.parentSessionId : undefined,
+    // Older ledgers stamped the "unknown" sentinel for parent-less events;
+    // treat it as absent so it cannot leak back into memory or exports.
+    parentSessionId: typeof record.parentSessionId === "string" && record.parentSessionId !== "unknown"
+      ? record.parentSessionId
+      : undefined,
     provider: typeof record.provider === "string" ? record.provider : undefined,
     model: typeof record.model === "string" ? record.model : undefined,
     reasoningEffort: typeof record.reasoningEffort === "string" ? record.reasoningEffort : undefined,
@@ -471,6 +531,7 @@ function writeLedgerFileAtomically(filePath: string, contents: string): void {
     descriptor = null;
     renameSync(tmpPath, filePath);
     fsyncDirectory(dirname(filePath));
+    bumpPathWriteGeneration(filePath);
   } catch (error) {
     if (descriptor !== null) closeSync(descriptor);
     if (existsSync(tmpPath)) {

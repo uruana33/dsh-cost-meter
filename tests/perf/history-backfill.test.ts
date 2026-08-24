@@ -38,7 +38,8 @@ function expectCommonMetrics(metrics: HistoryBackfillMetrics, sessionCount: numb
   expect(metrics.ledgerFinalBytes).toBeGreaterThan(0);
   expect(metrics.ledgerWriteBytes).toBeGreaterThanOrEqual(metrics.ledgerFinalBytes);
   expect(metrics.snapshotSessionCount).toBe(expectedBillableSessionCount(sessionCount) + metrics.liveEventCount);
-  expect(metrics.snapshotDetailCount).toBe(metrics.snapshotSessionCount);
+  // Slim snapshot contract: summaries for every session, exactly one embedded detail.
+  expect(metrics.snapshotDetailCount).toBe(1);
 }
 
 function expectedBillableSessionCount(sessionCount: number): number {

@@ -41,6 +41,7 @@ import {
   createHostCostAnalyticsReport,
   createHostUsageOverview,
   createInMemoryCostEventRepository,
+  createIncrementalLedgerAggregator,
   createLedgerAggregator,
   exportCostEventLedger,
   type BalanceSnapshot,
@@ -140,11 +141,11 @@ export interface MyMeterHostRuntimeOptions {
   exchangeRate?: ExchangeRateProvider | undefined;
   afterLedgerCommit?: (() => void) | undefined;
   onAfterLedgerCommitError?: ((error: unknown) => void) | undefined;
+  /** Durable session-header parent links (sessionId -> parentSessionId). */
+  observedSessionParents?: () => Readonly<Record<string, string>> | undefined;
 }
 
-export interface ExchangeRateProvider {
-  (): Promise<{ rate: number; fetchedAt?: string | undefined; source?: string | undefined }>;
-}
+export type ExchangeRateProvider = () => Promise<{ rate: number; fetchedAt?: string | undefined; source?: string | undefined }>;
 
 export interface MyMeterClientPluginOptions {
   slots: MyMeterSlotContext;
@@ -208,6 +209,7 @@ export function createMyMeterHostRuntime({
   now: configuredNow,
   afterLedgerCommit,
   onAfterLedgerCommitError,
+  observedSessionParents,
 }: MyMeterHostRuntimeOptions): MyMeterHostRuntime {
   const metadataAdapter = createHostMetadataAdapter();
   const projectionAdapter = createHostProjectionAdapter();
@@ -218,6 +220,13 @@ export function createMyMeterHostRuntime({
   );
   const readModel = createBillingReadModel<CostEvent>({ equals: sameCostEvent });
   readModel.rebuild(journal.list());
+  // Incremental aggregation keeps global/session/day summaries O(1) per
+  // journal mutation; the full aggregator remains for per-session detail
+  // aggregation, which only ever touches one session's events. Seeding from
+  // the journal (not the raw repository) keeps the aggregator's view
+  // identical to what upsert() mutates, including legacy conversions.
+  const incrementalAggregator = createIncrementalLedgerAggregator();
+  incrementalAggregator.seed(journal.list().map(toHostCostEventInput));
   const aggregator = createLedgerAggregator();
   const activeRequests = new Map<string, ActiveRequestState>();
   const listeners = new Set<(snapshot: MyMeterRemoteSnapshot) => void>();
@@ -252,7 +261,14 @@ export function createMyMeterHostRuntime({
 
   let cachedSnapshot: MyMeterRemoteSnapshot | null = null;
   let cachedProviderFingerprint = "";
-  let cachedContextFingerprint = "";
+  // Monotonic counter for the remote snapshot DTO. It increments only when a
+  // rebuild produces (potentially) new content, so clients can skip
+  // processing polls that return an unchanged snapshot.
+  let snapshotVersionCounter = 0;
+  // Context values baked into `cachedSnapshot`, compared structurally on each
+  // poll. This avoids re-serializing every session's context breakdown via
+  // JSON.stringify just to decide whether the cached snapshot is still fresh.
+  const cachedContexts = new Map<string, RemoteContextBreakdown | null>();
   let exchangeRateGeneration = 0;
   const activeRequestGenerations = new Map<string, number>();
   const detailCache = new Map<string, { readonly key: string; readonly detail: RemoteSessionDetail }>();
@@ -314,6 +330,7 @@ export function createMyMeterHostRuntime({
         }
       : undefined;
     cachedProviderFingerprint = providerFingerprint(configuredProviders);
+    snapshotVersionCounter += 1;
     cachedSnapshot = deepFreeze({
       ...createRemoteSnapshot(
       journal.list(),
@@ -326,14 +343,29 @@ export function createMyMeterHostRuntime({
       (sessionId) => readModel.getSessionEvents(sessionId),
       ),
       ledgerGeneration,
+      snapshotVersion: snapshotVersionCounter,
     });
-    cachedContextFingerprint = contextBreakdown
-      ? contextFingerprint(
-          Object.keys(cachedSnapshot.details),
-          (sessionId) => observedContext.get(sessionId) ?? null,
-        )
-      : "";
+    cachedContexts.clear();
+    if (contextBreakdown) {
+      for (const sessionId of Object.keys(cachedSnapshot.details)) {
+        cachedContexts.set(sessionId, cloneRemoteContextBreakdown(contextBreakdown(sessionId)));
+      }
+    }
     return cachedSnapshot;
+  };
+
+  const cachedContextChanged = (
+    readContext: (sessionId: string) => RemoteContextBreakdown | null,
+  ): boolean => {
+    if (!cachedSnapshot) return false;
+    const detailSessionIds = Object.keys(cachedSnapshot.details);
+    if (detailSessionIds.length !== cachedContexts.size) return true;
+    for (const sessionId of detailSessionIds) {
+      if (!sameRemoteContextBreakdown(cachedContexts.get(sessionId) ?? null, readContext(sessionId))) {
+        return true;
+      }
+    }
+    return false;
   };
 
   const emitSnapshot = (): void => {
@@ -381,6 +413,10 @@ export function createMyMeterHostRuntime({
     const previous = journal.getByKey(event.eventKey);
     const current = journal.upsert(event);
     if (sameCostEvent(previous, current)) return false;
+    incrementalAggregator.apply(
+      previous ? toHostCostEventInput(previous) : undefined,
+      toHostCostEventInput(current),
+    );
     readModel.upsert(current);
     ledgerGeneration += 1;
     usageOverviewCache.clear();
@@ -429,7 +465,12 @@ export function createMyMeterHostRuntime({
     const input = parsePayload(payload);
     const usage = input.hasUsage ? usageAdapter.fromAssistantUsage(input.usage) : undefined;
     const activeRequestCleared = clearActiveRequest(input.metadata);
-    const eventInput = createFinalizeInput(input, metadataAdapter.fromRequest(input.metadata), usage, journal.list());
+    const eventInput = createFinalizeInput(
+      input,
+      metadataAdapter.fromRequest(input.metadata),
+      usage,
+      (eventKey) => journal.getByKey(eventKey),
+    );
     if (!eventInput) {
       emitSnapshot();
       return;
@@ -497,19 +538,16 @@ export function createMyMeterHostRuntime({
   cleanups.push(dsh.on(ACTIVE_REQUEST_EVENT, handleActiveRequest));
 
   function aggregateLedger(): LedgerAggregation {
-    return aggregator.aggregate(journal.list().map(toHostCostEventInput));
+    return incrementalAggregator.snapshot();
   }
 
   const remote: MyMeterHostRemoteContribution = {
     getSnapshot() {
       const configuredProviders = readProviders();
-      const currentContextFingerprint = cachedSnapshot && contextBreakdown
-        ? contextFingerprint(Object.keys(cachedSnapshot.details), contextBreakdown)
-        : "";
       if (
         cachedSnapshot === null
         || cachedProviderFingerprint !== providerFingerprint(configuredProviders)
-        || cachedContextFingerprint !== currentContextFingerprint
+        || (contextBreakdown !== undefined && cachedContextChanged(contextBreakdown))
       ) {
         return rebuildSnapshot(configuredProviders);
       }
@@ -538,6 +576,7 @@ export function createMyMeterHostRuntime({
         aggregation: aggregateLedger(),
         events: journal.list(),
         details: remote.getSnapshot().details,
+        ...(observedSessionParents ? { observedParents: observedSessionParents() } : {}),
       })) as RemoteSessionCostTree;
     },
     async getCostAnalytics() {
@@ -790,7 +829,7 @@ function createFinalizeInput(
   input: ReturnType<typeof parsePayload>,
   metadata: ReturnType<ReturnType<typeof createHostMetadataAdapter>["fromRequest"]>,
   usage: TokenUsageRecord | undefined,
-  previousEvents: readonly CostEvent[],
+  lookupPreviousEvent: (eventKey: string) => CostEvent | undefined,
 ): FinalizeDeepSeekCostEventInput | null {
   const base = createBaseCostInput(input, metadata, "final");
   if (!base) {
@@ -798,7 +837,7 @@ function createFinalizeInput(
   }
 
   const key = createCostEventKey(base);
-  const previousEvent = previousEvents.find((event) => event.eventKey === key);
+  const previousEvent = lookupPreviousEvent(key);
   return {
     ...base,
     completedAt: asDateInput(input.raw.completedAt ?? input.raw.completed_at) ?? undefined,
@@ -1407,13 +1446,15 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   return Object.freeze(value) as T;
 }
 
-function contextFingerprint(
-  sessionIds: readonly string[],
-  readContext: (sessionId: string) => RemoteContextBreakdown | null,
-): string {
-  return JSON.stringify([...sessionIds]
-    .sort()
-    .map((sessionId) => [sessionId, readContext(sessionId)]));
+function sameRemoteContextBreakdown(
+  left: RemoteContextBreakdown | null,
+  right: RemoteContextBreakdown | null,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return left.systemTokens === right.systemTokens
+    && left.toolsTokens === right.toolsTokens
+    && left.messageTokens === right.messageTokens;
 }
 
 function cloneRemoteContextBreakdown(value: RemoteContextBreakdown | null): RemoteContextBreakdown | null {
@@ -1440,9 +1481,22 @@ function createRemoteSnapshot(
   const currentSession = latest ? aggregation.sessions.get(latest.sessionId) : undefined;
   const globalCurrencyTotals = aggregateCurrencyTotals(events);
   const sessions = createRemoteSessionSummaries(events, aggregation, exchangeRate, activeRequests, eventsBySession);
-  const details: Record<string, RemoteSessionDetail> = {};
 
-  for (const [sessionId, summary] of aggregation.sessions.entries()) {
+  // The polled snapshot embeds the full detail of the session it currently
+  // points at (the one driving the floating meter). The active-request
+  // session also needs its base detail so `withActiveRequestSnapshot` can
+  // merge live state on top of settled history. Every other session's detail
+  // stays behind the on-demand `getSessionDetail(sessionId)` RPC so the
+  // payload does not grow with total history.
+  const details: Record<string, RemoteSessionDetail> = {};
+  const embeddedDetailSessions = new Set<string>();
+  if (latest) embeddedDetailSessions.add(latest.sessionId);
+  for (const activeRequest of activeRequests.values()) {
+    embeddedDetailSessions.add(activeRequest.sessionId);
+  }
+  for (const sessionId of embeddedDetailSessions) {
+    const summary = aggregation.sessions.get(sessionId);
+    if (!summary) continue;
     details[sessionId] = toRemoteSessionDetail(
       sessionId,
       summary,
@@ -1482,7 +1536,32 @@ function createRemoteSnapshot(
     details,
   };
 
-  return withActiveRequestSnapshot(snapshot, events, aggregation, contextBreakdown, activeRequests);
+  return slimSnapshotDetailsToCurrentSession(
+    withActiveRequestSnapshot(snapshot, events, aggregation, contextBreakdown, activeRequests),
+  );
+}
+
+/**
+ * The polled snapshot carries exactly one full detail — the session it
+ * currently points at. This keeps the floating meter fully synchronous while
+ * capping the payload at O(1) instead of O(total sessions).
+ */
+function slimSnapshotDetailsToCurrentSession(
+  snapshot: MyMeterRemoteSnapshot,
+): MyMeterRemoteSnapshot {
+  const currentSessionId = snapshot.currentSessionId;
+  const keptDetail = currentSessionId !== null ? snapshot.details[currentSessionId] : undefined;
+  const detailKeys = Object.keys(snapshot.details);
+  if (detailKeys.length === 0 && keptDetail === undefined) return snapshot;
+  if (detailKeys.length === 1 && keptDetail !== undefined && detailKeys[0] === currentSessionId) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    details: keptDetail !== undefined && currentSessionId !== null
+      ? { [currentSessionId]: keptDetail }
+      : {},
+  };
 }
 
 function createRemoteSessionSummaries(

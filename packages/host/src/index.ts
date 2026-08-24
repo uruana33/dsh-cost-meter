@@ -36,6 +36,8 @@ export {
   createLedgerAggregator,
   dedupeHostCostEvents,
 } from "./ledger.js";
+export { createIncrementalLedgerAggregator } from "./incremental-aggregation.js";
+export type { IncrementalLedgerAggregator } from "./incremental-aggregation.js";
 export { createHostCostAnalyticsReport } from "./analytics.js";
 export type {
   CostEventRepository,

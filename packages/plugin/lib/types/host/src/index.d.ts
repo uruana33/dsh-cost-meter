@@ -1,6 +1,8 @@
 export type { BalanceSnapshot, CostEventInput, CostEventRecord, CostEventSource, CostEventStatus, CostRequestOutcome, HostCostEventIdentity, HostMetadataInput, HostMetadataRecord, LedgerAggregation, LedgerSummary, PricingZone, TokenProjectionRecord, TokenUsageInput, TokenUsageRecord, } from "./types.js";
 export { asNumber, asRecord, asText, createHostCostEventKey, createEmptySummary, dayKeyFromTimestamp, finalizeSummary, normalizeCostEvent, normalizeTokenUsage, UNKNOWN_TEXT, updateSummary, } from "./types.js";
 export { createFileCostEventRepository, createInMemoryCostEventRepository, createLedgerAggregator, dedupeHostCostEvents, } from "./ledger.js";
+export { createIncrementalLedgerAggregator } from "./incremental-aggregation.js";
+export type { IncrementalLedgerAggregator } from "./incremental-aggregation.js";
 export { createHostCostAnalyticsReport } from "./analytics.js";
 export type { CostEventRepository, FileCostEventRepositoryOptions, LedgerAggregator, LedgerRecoveryNotice, } from "./ledger.js";
 export type { CostAnalyticsAnomaly, CostAnalyticsOptions, CostAnalyticsReport, CostAnalyticsTrendBucket, } from "./analytics.js";

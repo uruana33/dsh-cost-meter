@@ -201,7 +201,7 @@ function findModel(catalog: AdditionalPricingCatalog, model: string): UsdTokenRa
   for (const candidate of candidates) {
     const direct = Object.entries(catalog.models).find(([id]) => id.toLowerCase() === candidate)?.[1];
     if (direct) return direct;
-    const alias = catalog.aliases && Object.prototype.hasOwnProperty.call(catalog.aliases, candidate)
+    const alias = catalog.aliases && Object.hasOwn(catalog.aliases, candidate)
       ? catalog.aliases[candidate]
       : undefined;
     if (alias && catalog.models[alias]) return catalog.models[alias];
@@ -221,10 +221,10 @@ function uniquelyMatchingCatalog(model: string): AdditionalPricingCatalog | unde
 
 export function getAdditionalPricingCatalog(kind: string): AdditionalPricingCatalog | undefined {
   const normalized = kind.trim().toLowerCase();
-  const catalogKind = Object.prototype.hasOwnProperty.call(API_PRICING_PROVIDER_ALIASES, normalized)
+  const catalogKind = Object.hasOwn(API_PRICING_PROVIDER_ALIASES, normalized)
     ? API_PRICING_PROVIDER_ALIASES[normalized as keyof typeof API_PRICING_PROVIDER_ALIASES]
     : normalized;
-  return Object.prototype.hasOwnProperty.call(ADDITIONAL_PRICING_CATALOGS, catalogKind)
+  return Object.hasOwn(ADDITIONAL_PRICING_CATALOGS, catalogKind)
     ? ADDITIONAL_PRICING_CATALOGS[catalogKind as AdditionalPricingCatalogKind]
     : undefined;
 }

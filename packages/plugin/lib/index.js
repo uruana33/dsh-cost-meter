@@ -580,7 +580,7 @@ function findModel(catalog, model) {
   for (const candidate of candidates) {
     const direct = Object.entries(catalog.models).find(([id]) => id.toLowerCase() === candidate)?.[1];
     if (direct) return direct;
-    const alias = catalog.aliases && Object.prototype.hasOwnProperty.call(catalog.aliases, candidate) ? catalog.aliases[candidate] : void 0;
+    const alias = catalog.aliases && Object.hasOwn(catalog.aliases, candidate) ? catalog.aliases[candidate] : void 0;
     if (alias && catalog.models[alias]) return catalog.models[alias];
   }
   return void 0;
@@ -594,8 +594,8 @@ function uniquelyMatchingCatalog(model) {
 }
 function getAdditionalPricingCatalog(kind) {
   const normalized = kind.trim().toLowerCase();
-  const catalogKind = Object.prototype.hasOwnProperty.call(API_PRICING_PROVIDER_ALIASES, normalized) ? API_PRICING_PROVIDER_ALIASES[normalized] : normalized;
-  return Object.prototype.hasOwnProperty.call(ADDITIONAL_PRICING_CATALOGS, catalogKind) ? ADDITIONAL_PRICING_CATALOGS[catalogKind] : void 0;
+  const catalogKind = Object.hasOwn(API_PRICING_PROVIDER_ALIASES, normalized) ? API_PRICING_PROVIDER_ALIASES[normalized] : normalized;
+  return Object.hasOwn(ADDITIONAL_PRICING_CATALOGS, catalogKind) ? ADDITIONAL_PRICING_CATALOGS[catalogKind] : void 0;
 }
 function lookupAdditionalPrice(kind, model, inputTokens = 0) {
   const routedCatalog = getAdditionalPricingCatalog(kind);
@@ -684,8 +684,8 @@ function resolveDeepSeekModelId(model) {
   const normalized = model.trim().toLowerCase();
   const candidates = [normalized, normalized.includes("/") ? normalized.slice(normalized.lastIndexOf("/") + 1) : ""].filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
   for (const candidate of candidates) {
-    if (Object.prototype.hasOwnProperty.call(DEEPSEEK_PRICE_TABLE, candidate)) return candidate;
-    if (Object.prototype.hasOwnProperty.call(DEEPSEEK_MODEL_ALIASES, candidate)) return DEEPSEEK_MODEL_ALIASES[candidate];
+    if (Object.hasOwn(DEEPSEEK_PRICE_TABLE, candidate)) return candidate;
+    if (Object.hasOwn(DEEPSEEK_MODEL_ALIASES, candidate)) return DEEPSEEK_MODEL_ALIASES[candidate];
   }
   return null;
 }
@@ -734,8 +734,8 @@ function resolveXaiModelId(model) {
   const normalized = model.trim().toLowerCase();
   const candidates = [normalized, normalized.includes("/") ? normalized.slice(normalized.lastIndexOf("/") + 1) : ""].filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
   for (const candidate of candidates) {
-    if (Object.prototype.hasOwnProperty.call(XAI_PRICE_TABLE_USD, candidate)) return candidate;
-    if (Object.prototype.hasOwnProperty.call(XAI_MODEL_ALIASES, candidate)) return XAI_MODEL_ALIASES[candidate];
+    if (Object.hasOwn(XAI_PRICE_TABLE_USD, candidate)) return candidate;
+    if (Object.hasOwn(XAI_MODEL_ALIASES, candidate)) return XAI_MODEL_ALIASES[candidate];
   }
   return null;
 }
@@ -2208,7 +2208,9 @@ function normalizeCostEvent(input) {
     turnId: asText(input.turnId),
     stepId: asText(input.stepId),
     attemptId: asText(input.attemptId),
-    parentSessionId: asText(input.parentSessionId),
+    // Absent stays absent: stamping the "unknown" sentinel here poisoned the
+    // ledger (the cost-tree builder treats "unknown" as "no parent").
+    ...input.parentSessionId ? { parentSessionId: input.parentSessionId } : {},
     provider: asText(input.provider),
     model: asText(input.model),
     reasoningEffort: asText(input.reasoningEffort),
@@ -2355,6 +2357,7 @@ import {
   readFileSync as readFileSync2,
   renameSync as renameSync2,
   rmSync as rmSync2,
+  statSync,
   writeFileSync as writeFileSync2
 } from "node:fs";
 import { dirname as dirname2 } from "node:path";
@@ -2613,33 +2616,44 @@ function createFileCostEventRepository({
   const initial = readLedgerFile(filePath, onRecovery);
   const repository = createInMemoryCostEventRepository(initial.events);
   let ledgerFingerprint = initial.fingerprint;
-  const mergeFromDisk = (events) => {
+  let lastSyncedDiskStat = statLedgerFile(filePath);
+  let lastSeenWriteGeneration = pathWriteGeneration(filePath);
+  const syncFromDisk = () => {
+    const stat = statLedgerFile(filePath);
+    const generation = pathWriteGeneration(filePath);
+    if (stat !== null && lastSyncedDiskStat !== null && stat.mtimeMs === lastSyncedDiskStat.mtimeMs && stat.size === lastSyncedDiskStat.size && generation === lastSeenWriteGeneration) {
+      return;
+    }
     const disk = readLedgerFile(filePath, onRecovery);
     ledgerFingerprint = disk.fingerprint;
-    return createInMemoryCostEventRepository([
-      ...disk.events,
-      ...events
-    ]).list();
+    repository.replaceAll(disk.events);
+    lastSyncedDiskStat = statLedgerFile(filePath);
+    lastSeenWriteGeneration = pathWriteGeneration(filePath);
   };
   const persist = () => {
     const payload = {
       schemaVersion: LEDGER_SCHEMA_VERSION,
       events: repository.list()
     };
-    const contents = JSON.stringify(payload, null, 2);
+    const contents = JSON.stringify(payload);
     mkdirSync2(dirname2(filePath), { recursive: true });
     writeLedgerFileAtomically(filePath, contents);
     ledgerFingerprint = createLedgerFingerprintFromContents(filePath, contents);
+    lastSyncedDiskStat = statLedgerFile(filePath);
+    lastSeenWriteGeneration = pathWriteGeneration(filePath);
   };
   return {
     upsert(event) {
-      repository.replaceAll(mergeFromDisk(repository.list()));
+      syncFromDisk();
       const result = repository.upsert(event);
       persist();
       return result;
     },
     commit(events) {
-      repository.replaceAll(mergeFromDisk([...repository.list(), ...events]));
+      syncFromDisk();
+      for (const event of events) {
+        repository.upsert(event);
+      }
       persist();
     },
     list() {
@@ -2649,7 +2663,10 @@ function createFileCostEventRepository({
       return repository.getById(id);
     },
     replaceAll(events) {
-      repository.replaceAll(mergeFromDisk(events));
+      syncFromDisk();
+      for (const event of events) {
+        repository.upsert(event);
+      }
       persist();
     },
     clear() {
@@ -2660,6 +2677,22 @@ function createFileCostEventRepository({
       return ledgerFingerprint;
     }
   };
+}
+function statLedgerFile(filePath) {
+  try {
+    const stat = statSync(filePath);
+    return { mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch {
+    return null;
+  }
+}
+var ledgerWriteGenerations = /* @__PURE__ */ new Map();
+function pathWriteGeneration(filePath) {
+  return ledgerWriteGenerations.get(`${process.pid}:${filePath}`) ?? 0;
+}
+function bumpPathWriteGeneration(filePath) {
+  const key = `${process.pid}:${filePath}`;
+  ledgerWriteGenerations.set(key, (ledgerWriteGenerations.get(key) ?? 0) + 1);
 }
 function createLedgerAggregator() {
   return {
@@ -2726,7 +2759,7 @@ function readLedgerFile(filePath, onRecovery) {
   });
   if (rejectedEventCount > 0) {
     const quarantinePath = quarantineLedgerFile(filePath, "invalid-events");
-    contents = JSON.stringify({ schemaVersion: LEDGER_SCHEMA_VERSION, events: restored }, null, 2);
+    contents = JSON.stringify({ schemaVersion: LEDGER_SCHEMA_VERSION, events: restored });
     writeLedgerFileAtomically(filePath, contents);
     onRecovery?.({
       filePath,
@@ -2782,7 +2815,9 @@ function restoreLedgerEvent(event) {
     turnId: typeof record.turnId === "string" ? record.turnId : void 0,
     stepId: typeof record.stepId === "string" ? record.stepId : void 0,
     attemptId: typeof record.attemptId === "string" ? record.attemptId : void 0,
-    parentSessionId: typeof record.parentSessionId === "string" ? record.parentSessionId : void 0,
+    // Older ledgers stamped the "unknown" sentinel for parent-less events;
+    // treat it as absent so it cannot leak back into memory or exports.
+    parentSessionId: typeof record.parentSessionId === "string" && record.parentSessionId !== "unknown" ? record.parentSessionId : void 0,
     provider: typeof record.provider === "string" ? record.provider : void 0,
     model: typeof record.model === "string" ? record.model : void 0,
     reasoningEffort: typeof record.reasoningEffort === "string" ? record.reasoningEffort : void 0,
@@ -2894,6 +2929,7 @@ function writeLedgerFileAtomically(filePath, contents) {
     descriptor2 = null;
     renameSync2(tmpPath, filePath);
     fsyncDirectory2(dirname2(filePath));
+    bumpPathWriteGeneration(filePath);
   } catch (error) {
     if (descriptor2 !== null) closeSync2(descriptor2);
     if (existsSync2(tmpPath)) {
@@ -2962,6 +2998,186 @@ function sourcePriority2(source) {
   }
 }
 
+// packages/host/src/incremental-aggregation.ts
+var UNKNOWN_TEXT2 = "unknown";
+function createIncrementalLedgerAggregator() {
+  const globalScope = createScopeState();
+  const sessionScopes = /* @__PURE__ */ new Map();
+  const dayScopes = /* @__PURE__ */ new Map();
+  const scopeForSession = (sessionId) => {
+    let scope = sessionScopes.get(sessionId);
+    if (!scope) {
+      scope = createScopeState();
+      sessionScopes.set(sessionId, scope);
+    }
+    return scope;
+  };
+  const scopeForDay = (timestamp2) => {
+    const dayKey = dayKeyFromTimestamp(timestamp2);
+    let scope = dayScopes.get(dayKey);
+    if (!scope) {
+      scope = createScopeState();
+      dayScopes.set(dayKey, scope);
+    }
+    return scope;
+  };
+  const add = (scope, event) => {
+    updateSummary(scope.summary, event);
+    const bucket = scope.byTimestamp.get(event.requestStartedAt);
+    const participant = { eventId: event.id, event };
+    if (bucket) {
+      bucket.push(participant);
+    } else {
+      scope.byTimestamp.set(event.requestStartedAt, [participant]);
+    }
+    scope.timestampByEventId.set(event.id, event.requestStartedAt);
+  };
+  const remove = (scope, eventId) => {
+    if (!scope) return;
+    const timestamp2 = scope.timestampByEventId.get(eventId);
+    if (timestamp2 === void 0) return;
+    scope.timestampByEventId.delete(eventId);
+    const bucket = scope.byTimestamp.get(timestamp2);
+    if (!bucket) return;
+    const index = bucket.findIndex((participant) => participant.eventId === eventId);
+    if (index === -1) return;
+    const removed = bucket.splice(index, 1)[0];
+    if (!removed) return;
+    subtractEvent(scope.summary, removed.event);
+    if (bucket.length === 0) {
+      scope.byTimestamp.delete(timestamp2);
+      retractBoundary(scope, timestamp2);
+    }
+  };
+  const addEverywhere = (event) => {
+    add(globalScope, event);
+    add(scopeForSession(event.sessionId), event);
+    add(scopeForDay(event.requestStartedAt), event);
+  };
+  const removeEverywhere = (event) => {
+    remove(globalScope, event.id);
+    const sessionScope = sessionScopes.get(event.sessionId);
+    remove(sessionScope, event.id);
+    if (sessionScope && sessionScope.summary.requestCount === 0) {
+      sessionScopes.delete(event.sessionId);
+    }
+    const dayKey = dayKeyFromTimestamp(event.requestStartedAt);
+    const dayScope = dayScopes.get(dayKey);
+    remove(dayScope, event.id);
+    if (dayScope && dayScope.summary.requestCount === 0) {
+      dayScopes.delete(dayKey);
+    }
+  };
+  return {
+    seed(events) {
+      this.reset();
+      for (const input of events) {
+        addEverywhere(normalizeCostEvent(input));
+      }
+    },
+    apply(previous, next) {
+      if (previous) removeEverywhere(normalizeCostEvent(previous));
+      if (next) addEverywhere(normalizeCostEvent(next));
+    },
+    reset() {
+      resetScope(globalScope);
+      sessionScopes.clear();
+      dayScopes.clear();
+    },
+    snapshot() {
+      finalizeSummary(globalScope.summary);
+      for (const scope of sessionScopes.values()) {
+        finalizeSummary(scope.summary);
+      }
+      for (const scope of dayScopes.values()) {
+        finalizeSummary(scope.summary);
+      }
+      return {
+        global: { ...globalScope.summary },
+        sessions: new Map([...sessionScopes].map(([id, scope]) => [id, { ...scope.summary }])),
+        days: new Map([...dayScopes].map(([dayKey, scope]) => [dayKey, { ...scope.summary }]))
+      };
+    }
+  };
+}
+function createScopeState() {
+  return {
+    summary: createEmptySummary(),
+    byTimestamp: /* @__PURE__ */ new Map(),
+    timestampByEventId: /* @__PURE__ */ new Map()
+  };
+}
+function resetScope(scope) {
+  scope.summary = createEmptySummary();
+  scope.byTimestamp.clear();
+  scope.timestampByEventId.clear();
+}
+function retractBoundary(scope, removedTimestamp) {
+  const summary = scope.summary;
+  if (summary.firstSeenAt !== removedTimestamp && summary.lastSeenAt !== removedTimestamp) {
+    return;
+  }
+  let minTimestamp = null;
+  let maxTimestamp = null;
+  for (const timestamp2 of scope.byTimestamp.keys()) {
+    if (minTimestamp === null || timestamp2 < minTimestamp) minTimestamp = timestamp2;
+    if (maxTimestamp === null || timestamp2 > maxTimestamp) maxTimestamp = timestamp2;
+  }
+  summary.firstSeenAt = minTimestamp ?? "";
+  summary.lastSeenAt = maxTimestamp ?? "";
+  restoreBoundaryMetadata(
+    summary,
+    maxTimestamp === null ? void 0 : scope.byTimestamp.get(maxTimestamp)
+  );
+}
+function restoreBoundaryMetadata(summary, bucket) {
+  const owner = bucket?.[0]?.event;
+  if (!owner) {
+    summary.provider = UNKNOWN_TEXT2;
+    summary.model = UNKNOWN_TEXT2;
+    summary.reasoningEffort = UNKNOWN_TEXT2;
+    summary.agentPreset = UNKNOWN_TEXT2;
+    return;
+  }
+  summary.provider = owner.provider !== UNKNOWN_TEXT2 ? owner.provider : UNKNOWN_TEXT2;
+  summary.model = owner.model !== UNKNOWN_TEXT2 ? owner.model : UNKNOWN_TEXT2;
+  summary.reasoningEffort = owner.reasoningEffort !== UNKNOWN_TEXT2 ? owner.reasoningEffort : UNKNOWN_TEXT2;
+  summary.agentPreset = owner.agentPreset !== UNKNOWN_TEXT2 ? owner.agentPreset : UNKNOWN_TEXT2;
+}
+function subtractEvent(summary, event) {
+  summary.requestCount -= 1;
+  summary.cacheHitTokens -= event.cacheHitTokens;
+  summary.cacheMissTokens -= event.cacheMissTokens;
+  summary.outputTokens -= event.outputTokens;
+  summary.reasoningTokens -= event.reasoningTokens;
+  switch (event.status) {
+    case "estimated":
+      summary.estimatedCount -= 1;
+      summary.estimatedMicroCny -= event.amountMicroCny;
+      summary.totalMicroCny -= event.amountMicroCny;
+      break;
+    case "settled":
+      summary.settledCount -= 1;
+      summary.settledMicroCny -= event.amountMicroCny;
+      summary.totalMicroCny -= event.amountMicroCny;
+      break;
+    case "failed":
+      summary.failedCount -= 1;
+      summary.failedMicroCny -= event.amountMicroCny;
+      summary.totalMicroCny -= event.amountMicroCny;
+      break;
+    case "unknown":
+      summary.unknownCount -= 1;
+      summary.unknownMicroCny -= event.amountMicroCny;
+      break;
+  }
+  if (event.pricingZone === "peak") {
+    summary.peakMicroCny -= event.amountMicroCny;
+  } else if (event.pricingZone === "offpeak") {
+    summary.offpeakMicroCny -= event.amountMicroCny;
+  }
+}
+
 // packages/host/src/analytics.ts
 function createHostCostAnalyticsReport(source, options = {}) {
   if (isCostEventInputArray(source)) {
@@ -3021,7 +3237,7 @@ import {
   realpathSync,
   renameSync as renameSync3,
   rmSync as rmSync3,
-  statSync,
+  statSync as statSync2,
   truncateSync,
   writeFileSync as writeFileSync3
 } from "node:fs";
@@ -3341,8 +3557,8 @@ function canonicalDirectoryEntry(directoryPath, name2, stats) {
 }
 function isSameExistingFile(left, right) {
   try {
-    const leftStats = statSync(left, { bigint: true });
-    const rightStats = statSync(right, { bigint: true });
+    const leftStats = statSync2(left, { bigint: true });
+    const rightStats = statSync2(right, { bigint: true });
     return leftStats.dev === rightStats.dev && leftStats.ino === rightStats.ino;
   } catch {
     return false;
@@ -3429,7 +3645,7 @@ function readLegacyEvents(filePath, onRecovery) {
   }
 }
 function readLogState(filePath) {
-  const stats = statSync(filePath, { bigint: true });
+  const stats = statSync2(filePath, { bigint: true });
   return { bytes: Number(stats.size), mtimeNs: stats.mtimeNs };
 }
 function assertLogStateUnchanged(filePath, expected) {
@@ -3444,7 +3660,7 @@ function assertLogStateUnchanged(filePath, expected) {
   }
 }
 function readManifestState(filePath) {
-  return { mtimeNs: statSync(filePath, { bigint: true }).mtimeNs };
+  return { mtimeNs: statSync2(filePath, { bigint: true }).mtimeNs };
 }
 function assertManifestStateUnchanged(filePath, expected, state) {
   let currentState;
@@ -3763,7 +3979,7 @@ function quarantineFile(filePath, reason) {
 }
 function safeRemove(filePath) {
   try {
-    if (existsSync3(filePath) && statSync(filePath).isFile()) rmSync3(filePath, { force: true });
+    if (existsSync3(filePath) && statSync2(filePath).isFile()) rmSync3(filePath, { force: true });
   } catch {
   }
 }
@@ -4501,10 +4717,11 @@ import { jsx as jsx6, jsxs as jsxs6 } from "react/jsx-runtime";
 function buildSessionCostTree({
   aggregation,
   events,
-  details = {}
+  details = {},
+  observedParents
 }) {
-  const sessionIds = orderedSessionIds(aggregation, events, details);
-  const parentBySession = observeParents(events);
+  const sessionIds = orderedSessionIds(aggregation, events, details, observedParents);
+  const parentBySession = mergeObservedParents(observeParents(events), observedParents);
   const nodes = createNodes(sessionIds, aggregation, details, parentBySession);
   const parentForTree = /* @__PURE__ */ new Map();
   const missingParents = [];
@@ -4550,7 +4767,7 @@ function buildSessionCostTree({
     })
   });
 }
-function orderedSessionIds(aggregation, events, details) {
+function orderedSessionIds(aggregation, events, details, observedParents) {
   const ids = /* @__PURE__ */ new Set();
   for (const id of aggregation.sessions.keys()) ids.add(id);
   for (const event of events) {
@@ -4560,7 +4777,20 @@ function orderedSessionIds(aggregation, events, details) {
   for (const id of Object.keys(details)) {
     if (normalizeSessionId(id)) ids.add(id);
   }
+  for (const [child, parent] of Object.entries(observedParents ?? {})) {
+    if (normalizeSessionId(child)) ids.add(child);
+    if (normalizeSessionId(parent)) ids.add(parent);
+  }
   return [...ids].sort();
+}
+function mergeObservedParents(observed, observedParents) {
+  for (const [childRaw, parentRaw] of Object.entries(observedParents ?? {})) {
+    const child = normalizeSessionId(childRaw);
+    const parent = normalizeSessionId(parentRaw);
+    if (!child || !parent || child === parent) continue;
+    observed.set(child, { parentSessionId: parent, activity: "", sequence: Number.MAX_SAFE_INTEGER });
+  }
+  return observed;
 }
 function observeParents(events) {
   const observed = /* @__PURE__ */ new Map();
@@ -4859,7 +5089,8 @@ function parseSnapshot(value) {
     sessions,
     details,
     ...record.exchangeRate === void 0 ? {} : { exchangeRate: parseExchangeRate(record.exchangeRate) },
-    ...record.ledgerGeneration === void 0 ? {} : { ledgerGeneration: nonNegativeInteger(record.ledgerGeneration, "ledgerGeneration") }
+    ...record.ledgerGeneration === void 0 ? {} : { ledgerGeneration: nonNegativeInteger(record.ledgerGeneration, "ledgerGeneration") },
+    ...record.snapshotVersion === void 0 ? {} : { snapshotVersion: nonNegativeInteger(record.snapshotVersion, "snapshotVersion") }
   };
 }
 function parseSessionCostTree(value) {
@@ -5410,7 +5641,8 @@ function createMyMeterHostRuntime({
   exchangeRate: configuredExchangeRate,
   now: configuredNow,
   afterLedgerCommit,
-  onAfterLedgerCommitError
+  onAfterLedgerCommitError,
+  observedSessionParents
 }) {
   const metadataAdapter = createHostMetadataAdapter();
   const projectionAdapter = createHostProjectionAdapter();
@@ -5421,6 +5653,8 @@ function createMyMeterHostRuntime({
   );
   const readModel = createBillingReadModel({ equals: sameCostEvent });
   readModel.rebuild(journal.list());
+  const incrementalAggregator = createIncrementalLedgerAggregator();
+  incrementalAggregator.seed(journal.list().map(toHostCostEventInput));
   const aggregator = createLedgerAggregator();
   const activeRequests = /* @__PURE__ */ new Map();
   const listeners = /* @__PURE__ */ new Set();
@@ -5454,7 +5688,8 @@ function createMyMeterHostRuntime({
   };
   let cachedSnapshot = null;
   let cachedProviderFingerprint = "";
-  let cachedContextFingerprint = "";
+  let snapshotVersionCounter = 0;
+  const cachedContexts = /* @__PURE__ */ new Map();
   let exchangeRateGeneration = 0;
   const activeRequestGenerations = /* @__PURE__ */ new Map();
   const detailCache = /* @__PURE__ */ new Map();
@@ -5507,6 +5742,7 @@ function createMyMeterHostRuntime({
       return value;
     } : void 0;
     cachedProviderFingerprint = providerFingerprint(configuredProviders);
+    snapshotVersionCounter += 1;
     cachedSnapshot = deepFreeze({
       ...createRemoteSnapshot(
         journal.list(),
@@ -5518,13 +5754,27 @@ function createMyMeterHostRuntime({
         configuredProviders,
         (sessionId) => readModel.getSessionEvents(sessionId)
       ),
-      ledgerGeneration
+      ledgerGeneration,
+      snapshotVersion: snapshotVersionCounter
     });
-    cachedContextFingerprint = contextBreakdown ? contextFingerprint(
-      Object.keys(cachedSnapshot.details),
-      (sessionId) => observedContext.get(sessionId) ?? null
-    ) : "";
+    cachedContexts.clear();
+    if (contextBreakdown) {
+      for (const sessionId of Object.keys(cachedSnapshot.details)) {
+        cachedContexts.set(sessionId, cloneRemoteContextBreakdown(contextBreakdown(sessionId)));
+      }
+    }
     return cachedSnapshot;
+  };
+  const cachedContextChanged = (readContext) => {
+    if (!cachedSnapshot) return false;
+    const detailSessionIds = Object.keys(cachedSnapshot.details);
+    if (detailSessionIds.length !== cachedContexts.size) return true;
+    for (const sessionId of detailSessionIds) {
+      if (!sameRemoteContextBreakdown(cachedContexts.get(sessionId) ?? null, readContext(sessionId))) {
+        return true;
+      }
+    }
+    return false;
   };
   const emitSnapshot = () => {
     cachedSnapshot = null;
@@ -5563,6 +5813,10 @@ function createMyMeterHostRuntime({
     const previous = journal.getByKey(event.eventKey);
     const current = journal.upsert(event);
     if (sameCostEvent(previous, current)) return false;
+    incrementalAggregator.apply(
+      previous ? toHostCostEventInput(previous) : void 0,
+      toHostCostEventInput(current)
+    );
     readModel.upsert(current);
     ledgerGeneration += 1;
     usageOverviewCache.clear();
@@ -5598,7 +5852,12 @@ function createMyMeterHostRuntime({
     const input = parsePayload(payload);
     const usage = input.hasUsage ? usageAdapter.fromAssistantUsage(input.usage) : void 0;
     const activeRequestCleared = clearActiveRequest2(input.metadata);
-    const eventInput = createFinalizeInput(input, metadataAdapter.fromRequest(input.metadata), usage, journal.list());
+    const eventInput = createFinalizeInput(
+      input,
+      metadataAdapter.fromRequest(input.metadata),
+      usage,
+      (eventKey) => journal.getByKey(eventKey)
+    );
     if (!eventInput) {
       emitSnapshot();
       return;
@@ -5653,13 +5912,12 @@ function createMyMeterHostRuntime({
   cleanups.push(dsh.on(FINAL_USAGE_EVENT, handleFinalUsage));
   cleanups.push(dsh.on(ACTIVE_REQUEST_EVENT, handleActiveRequest));
   function aggregateLedger() {
-    return aggregator.aggregate(journal.list().map(toHostCostEventInput));
+    return incrementalAggregator.snapshot();
   }
   const remote = {
     getSnapshot() {
       const configuredProviders = readProviders();
-      const currentContextFingerprint = cachedSnapshot && contextBreakdown ? contextFingerprint(Object.keys(cachedSnapshot.details), contextBreakdown) : "";
-      if (cachedSnapshot === null || cachedProviderFingerprint !== providerFingerprint(configuredProviders) || cachedContextFingerprint !== currentContextFingerprint) {
+      if (cachedSnapshot === null || cachedProviderFingerprint !== providerFingerprint(configuredProviders) || contextBreakdown !== void 0 && cachedContextChanged(contextBreakdown)) {
         return rebuildSnapshot(configuredProviders);
       }
       return cachedSnapshot;
@@ -5686,7 +5944,8 @@ function createMyMeterHostRuntime({
       return deepFreeze(buildSessionCostTree({
         aggregation: aggregateLedger(),
         events: journal.list(),
-        details: remote.getSnapshot().details
+        details: remote.getSnapshot().details,
+        ...observedSessionParents ? { observedParents: observedSessionParents() } : {}
       }));
     },
     async getCostAnalytics() {
@@ -5880,13 +6139,13 @@ function createEstimateInput(input, metadata, projection) {
     usageProjection: projection ? toCoreProjection(projection) : void 0
   };
 }
-function createFinalizeInput(input, metadata, usage, previousEvents) {
+function createFinalizeInput(input, metadata, usage, lookupPreviousEvent) {
   const base = createBaseCostInput(input, metadata, "final");
   if (!base) {
     return null;
   }
   const key = createCostEventKey(base);
-  const previousEvent = previousEvents.find((event) => event.eventKey === key);
+  const previousEvent = lookupPreviousEvent(key);
   return {
     ...base,
     completedAt: asDateInput(input.raw.completedAt ?? input.raw.completed_at) ?? void 0,
@@ -6359,8 +6618,10 @@ function deepFreeze(value, seen = /* @__PURE__ */ new WeakSet()) {
   }
   return Object.freeze(value);
 }
-function contextFingerprint(sessionIds, readContext) {
-  return JSON.stringify([...sessionIds].sort().map((sessionId) => [sessionId, readContext(sessionId)]));
+function sameRemoteContextBreakdown(left, right) {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return left.systemTokens === right.systemTokens && left.toolsTokens === right.toolsTokens && left.messageTokens === right.messageTokens;
 }
 function cloneRemoteContextBreakdown(value) {
   return value ? {
@@ -6375,7 +6636,14 @@ function createRemoteSnapshot(events, aggregation, balance, exchangeRate, contex
   const globalCurrencyTotals = aggregateCurrencyTotals(events);
   const sessions = createRemoteSessionSummaries(events, aggregation, exchangeRate, activeRequests, eventsBySession);
   const details = {};
-  for (const [sessionId, summary] of aggregation.sessions.entries()) {
+  const embeddedDetailSessions = /* @__PURE__ */ new Set();
+  if (latest) embeddedDetailSessions.add(latest.sessionId);
+  for (const activeRequest of activeRequests.values()) {
+    embeddedDetailSessions.add(activeRequest.sessionId);
+  }
+  for (const sessionId of embeddedDetailSessions) {
+    const summary = aggregation.sessions.get(sessionId);
+    if (!summary) continue;
     details[sessionId] = toRemoteSessionDetail(
       sessionId,
       summary,
@@ -6413,7 +6681,22 @@ function createRemoteSnapshot(events, aggregation, balance, exchangeRate, contex
     sessions,
     details
   };
-  return withActiveRequestSnapshot(snapshot, events, aggregation, contextBreakdown, activeRequests);
+  return slimSnapshotDetailsToCurrentSession(
+    withActiveRequestSnapshot(snapshot, events, aggregation, contextBreakdown, activeRequests)
+  );
+}
+function slimSnapshotDetailsToCurrentSession(snapshot) {
+  const currentSessionId = snapshot.currentSessionId;
+  const keptDetail = currentSessionId !== null ? snapshot.details[currentSessionId] : void 0;
+  const detailKeys = Object.keys(snapshot.details);
+  if (detailKeys.length === 0 && keptDetail === void 0) return snapshot;
+  if (detailKeys.length === 1 && keptDetail !== void 0 && detailKeys[0] === currentSessionId) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    details: keptDetail !== void 0 && currentSessionId !== null ? { [currentSessionId]: keptDetail } : {}
+  };
 }
 function createRemoteSessionSummaries(events, aggregation, exchangeRate, activeRequests = /* @__PURE__ */ new Map(), eventsBySession) {
   const sessions = [...aggregation.sessions.entries()].map(
@@ -7392,7 +7675,7 @@ function createHistoryRecovery(options) {
     }
   };
 }
-function createCordisHistoryRecoverySource(ctx) {
+function createCordisHistoryRecoverySource(ctx, onSessionHeader) {
   return {
     async list(signal) {
       const services = resolveServices(ctx);
@@ -7402,6 +7685,7 @@ function createCordisHistoryRecoverySource(ctx) {
           if (typeof persistence.listSnapshots === "function") {
             const records = await persistence.listSnapshots(signal);
             return records.flatMap((record) => {
+              onSessionHeader?.(record);
               const ref = normalizeRef(record, "persistence");
               return ref ? [ref] : [];
             });
@@ -7413,6 +7697,7 @@ function createCordisHistoryRecoverySource(ctx) {
         try {
           const records = await services.query.listSessions(signal);
           return records.flatMap((record) => {
+            onSessionHeader?.(record);
             const ref = normalizeRef(record, "query");
             return ref ? [ref] : [];
           });
@@ -7423,6 +7708,7 @@ function createCordisHistoryRecoverySource(ctx) {
         const persistence = services.persistence;
         const records = await persistence.list(signal);
         return records.flatMap((record) => {
+          onSessionHeader?.(record);
           const ref = normalizeRef(record, "persistence");
           return ref ? [ref] : [];
         });
@@ -7441,6 +7727,7 @@ function createCordisHistoryRecoverySource(ctx) {
         }
       } else if (services.persistence) raw = await services.persistence.inspect(ref.id, signal);
       else return null;
+      onSessionHeader?.(raw);
       return normalizeReplaySession(raw);
     }
   };
@@ -7810,7 +8097,7 @@ var ACTIVE_REQUEST_EVENT2 = "mymeter:active_request";
 var STREAMING_ESTIMATE_MIN_TOKEN_STEP = 8;
 var STREAMING_ESTIMATE_MIN_INTERVAL_MS = 100;
 var HISTORY_RECOVERY_SOURCE_KEY = "dsh-session-history";
-var HISTORY_RECOVERY_PROJECTION_VERSION = "cordis-history-v1";
+var HISTORY_RECOVERY_PROJECTION_VERSION = "cordis-history-v2";
 var HISTORY_CHECKPOINT_REFRESH_DEBOUNCE_MS = 250;
 function createMyMeterCordisHostRuntime({
   ctx,
@@ -7842,6 +8129,16 @@ function createMyMeterCordisHostRuntime({
       return () => set.delete(listener);
     }
   };
+  const observedParentLinks = /* @__PURE__ */ new Map();
+  const noteSessionHeader = (session) => {
+    const record = asRecord5(session);
+    const header = asRecord5(record.header ?? record.session ?? record);
+    const id = text2(record.id ?? header.id);
+    if (!id) return;
+    if (observedParentLinks.has(id)) return;
+    const parent = sessionParentLink({ id, header });
+    if (parent && parent !== id) observedParentLinks.set(id, parent);
+  };
   const runtime = createMyMeterHostRuntime({
     dsh,
     balance,
@@ -7852,7 +8149,8 @@ function createMyMeterCordisHostRuntime({
     onAfterLedgerCommitError: (error) => {
       ctx.logger?.warn(`mymeter: history checkpoint refresh failed (${errorMessage2(error)})`);
     },
-    contextBreakdown: (sessionId) => readContextBreakdown(projectionService, sessionRefs.get(sessionId))
+    contextBreakdown: (sessionId) => readContextBreakdown(projectionService, sessionRefs.get(sessionId)),
+    observedSessionParents: () => Object.fromEntries(observedParentLinks)
   });
   const sessions = /* @__PURE__ */ new Map();
   const seededEventCounts = /* @__PURE__ */ new Map();
@@ -7861,7 +8159,11 @@ function createMyMeterCordisHostRuntime({
     rememberSession(sessionRefs, session);
     const sessionId = text2(session?.id ?? session?.sessionId);
     const events = session.events;
-    if (!sessionId || !Array.isArray(events) || events.length === 0) return false;
+    if (!sessionId || !Array.isArray(events) || events.length === 0) {
+      noteSessionHeader(session);
+      return false;
+    }
+    noteSessionHeader(session);
     const seededCount = seededEventCounts.get(sessionId) ?? 0;
     if (seededEventCounts.has(sessionId) && events.length <= seededCount) return true;
     runtime.batch(() => {
@@ -7873,7 +8175,7 @@ function createMyMeterCordisHostRuntime({
     return true;
   };
   const history = createHistoryRecovery({
-    source: createCordisHistoryRecoverySource(ctx),
+    source: createCordisHistoryRecoverySource(ctx, noteSessionHeader),
     checkpoint: checkpointController,
     target: {
       replayBatch(historySessions) {
@@ -7903,6 +8205,7 @@ function createMyMeterCordisHostRuntime({
       history.markLive(text2(session?.id ?? session?.sessionId));
     } else {
       rememberSession(sessionRefs, session);
+      noteSessionHeader(session);
     }
     const sessionId = text2(session?.id ?? session?.sessionId);
     const events = session.events;
@@ -8185,6 +8488,9 @@ function bridgeSessionEvent(sessions, emit, session, event) {
   if (state.agentPreset === "unknown") {
     state.agentPreset = sessionAgentPreset(session) || state.agentPreset;
   }
+  if (state.parentSessionId === void 0) {
+    state.parentSessionId = sessionParentLink(session);
+  }
   const data = asRecord5(record.data);
   const time = finiteTime(record.time);
   if (type === "agent-preset/selected") {
@@ -8362,6 +8668,7 @@ function createSessionState() {
     model: "unknown",
     reasoningEffort: "unknown",
     agentPreset: "unknown",
+    parentSessionId: void 0,
     startedAt: null,
     turn: null,
     step: null,
@@ -8374,6 +8681,15 @@ function createSessionState() {
 function sessionAgentPreset(session) {
   const record = asRecord5(session);
   return text2(asRecord5(record.header).agentPreset) || text2(record.agentPreset);
+}
+function sessionParentLink(session) {
+  const record = asRecord5(session);
+  const header = asRecord5(record.header);
+  const origin = text2(header.origin) || text2(record.origin);
+  const rawDepth = header.delegationDepth ?? record.delegationDepth;
+  const delegated = origin === "subagent" || typeof rawDepth === "number" && Number.isSafeInteger(rawDepth) && rawDepth > 0;
+  if (!delegated) return void 0;
+  return text2(header.parentSession) || text2(record.parentSession) || text2(asRecord5(record.session).parentSession) || void 0;
 }
 function eventIsInHistory(events, event) {
   if (events.includes(event)) return true;
@@ -8390,6 +8706,7 @@ function freezeRequestMetadata(state, turn, step, attemptId, startedAt) {
     model: state.model,
     reasoningEffort: state.reasoningEffort,
     agentPreset: state.agentPreset,
+    parentSessionId: state.parentSessionId,
     startedAt,
     attemptId,
     metadataLocked: false,
@@ -8411,6 +8728,9 @@ function completeActiveRequestMetadata(state) {
   request.provider = state.provider;
   request.model = state.model;
   request.reasoningEffort = state.reasoningEffort;
+  if (request.parentSessionId === void 0 && state.parentSessionId !== void 0) {
+    request.parentSessionId = state.parentSessionId;
+  }
 }
 function completeRequestMetadataFromAssistantMessage(request, data) {
   const message = asRecord5(data.message);
@@ -8458,7 +8778,8 @@ function requestMetadata(sessionId, turn, step, request) {
     provider: request.provider,
     model: request.model,
     reasoningEffort: request.reasoningEffort,
-    agentPreset: request.agentPreset
+    agentPreset: request.agentPreset,
+    ...request.parentSessionId ? { parentSessionId: request.parentSessionId } : {}
   };
 }
 function turnEndOutcome(reason) {

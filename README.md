@@ -11,7 +11,7 @@ dsh-cost-meter 是面向 dsh / DeepSeek Harness 的多厂商 LLM Token 费用仪
 
 ## 当前版本
 
-当前发布包为 [`@mymeter/dsh-cost-meter@0.2.1`](https://www.npmjs.com/package/@mymeter/dsh-cost-meter)。近期版本的重点是：
+当前发布包为 [`@mymeter/dsh-cost-meter@0.2.2`](https://www.npmjs.com/package/@mymeter/dsh-cost-meter)。近期版本的重点是：
 
 - 全局用量概览支持今日、最近 7 天和最近 30 天，显示费用、Token、请求数、计价覆盖率和主要模型。
 - `Token计费` 页面统一会话、费用树和趋势/异常视图；趋势图按模型着色并提供范围切换，账本可导出为 JSON/CSV。
@@ -35,7 +35,7 @@ npm ci
 npm run build
 npm run pack:plugin
 npm run verify:package
-dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.1.tgz
+dsh plugin --profile web add ./mymeter-dsh-cost-meter-0.2.2.tgz
 ```
 
 重新加载对应的 dsh Web profile 后，打开一个会话即可使用。运行环境要求 Node.js `^22.19.0 || >=24.0.0`，以及启用 Web bundle 的 dsh profile。
